@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import argparse
+import random
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Sequence
+
+from storage_benchmark.config import S3Settings, load_config
+from storage_benchmark.io_basic import cleanup_keys, run_workloads
+from storage_benchmark.metrics import MetricRecord, write_metrics
+from storage_benchmark.s3_client import BotoS3Client
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "run":
+        return run(args.config)
+    parser.print_help()
+    return 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="storage-benchmark")
+    subparsers = parser.add_subparsers(dest="command")
+
+    run_parser = subparsers.add_parser("run", help="run benchmark workloads")
+    run_parser.add_argument(
+        "--config",
+        "-c",
+        type=Path,
+        default=Path("configs/minio-smoke.toml"),
+        help="benchmark TOML configuration",
+    )
+    return parser
+
+
+def run(config_path: Path) -> int:
+    try:
+        benchmark_config = load_config(config_path)
+        settings = S3Settings.from_config_and_env(benchmark_config.s3)
+    except Exception as exc:
+        print(f"Configuration error: {exc}")
+        return 2
+
+    client = BotoS3Client(settings)
+    rng = random.Random(benchmark_config.run.seed)
+    output_dir = _create_output_dir(benchmark_config.run.output_dir)
+
+    try:
+        samples, keys_by_workload = run_workloads(benchmark_config.workloads, client, rng)
+        records = write_metrics(output_dir, samples)
+        shutil.copyfile(config_path, output_dir / "run_config.toml")
+        if benchmark_config.run.cleanup:
+            cleanup_keys(client, keys_by_workload)
+    except Exception as exc:
+        print(f"Benchmark failed. Partial output directory: {output_dir}")
+        print(f"Error: {exc}")
+        return 1
+
+    print(f"Benchmark completed: {output_dir}")
+    _print_records(records)
+    return 0
+
+
+def _create_output_dir(root: Path) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    output_dir = root / timestamp
+    counter = 1
+    while output_dir.exists():
+        output_dir = root / f"{timestamp}-{counter}"
+        counter += 1
+    output_dir.mkdir(parents=True)
+    return output_dir
+
+
+def _print_records(records: list[MetricRecord]) -> None:
+    header = (
+        "workload",
+        "operation",
+        "ops",
+        "MB/s",
+        "avg ms",
+        "p95 ms",
+        "p99 ms",
+        "IOPS",
+    )
+    print(" | ".join(header))
+    print("-" * 96)
+    for record in records:
+        row = (
+            record.workload,
+            record.operation,
+            str(record.operations),
+            f"{record.throughput_mb_s:.2f}",
+            f"{record.avg_latency_ms:.2f}",
+            f"{record.p95_latency_ms:.2f}",
+            f"{record.p99_latency_ms:.2f}",
+            f"{record.iops:.2f}",
+        )
+        print(" | ".join(row))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

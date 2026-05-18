@@ -1,0 +1,45 @@
+[s3]
+endpoint_url = "http://127.0.0.1:9000"
+bucket = "benchmark"
+region = "us-east-1"
+use_ssl = false
+
+[run]
+name = "minio-vps-smoke"
+output_dir = "results"
+seed = 42
+cleanup = false
+
+[[workloads]]
+name = "small-random-write"
+operation = "randomwrite"
+object_size = "16KiB"
+iterations = 20
+chunk_size = "16KiB"
+key_prefix = "benchmark/vps/small"
+
+[[workloads]]
+name = "small-random-read"
+operation = "randomread"
+object_size = "16KiB"
+iterations = 20
+chunk_size = "16KiB"
+key_prefix = "benchmark/vps/small"
+source_workload = "small-random-write"
+
+[[workloads]]
+name = "medium-seq-write"
+operation = "seqwrite"
+object_size = "10MiB"
+iterations = 1
+chunk_size = "1MiB"
+key_prefix = "benchmark/vps/medium"
+
+[[workloads]]
+name = "medium-seq-read"
+operation = "seqread"
+object_size = "10MiB"
+iterations = 1
+chunk_size = "1MiB"
+key_prefix = "benchmark/vps/medium"
+source_workload = "medium-seq-write"

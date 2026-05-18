@@ -1,6 +1,5 @@
-def main():
-    print("Hello from decentrolized-storage-system-benchmark!")
+from storage_benchmark.cli import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

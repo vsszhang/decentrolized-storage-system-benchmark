@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# macOS
+.DS_Store
+
+# Local environment and benchmark output
+.env
+.env.*
+results/
+Project Proposal for Phase II.pdf
