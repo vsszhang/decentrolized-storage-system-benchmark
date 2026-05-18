@@ -429,6 +429,7 @@ flowchart TD
 - 按需生成确定性字节流。
 - 不会一次性把 4GiB/10GiB 对象放进内存。
 - 基于 `seed + block_index` 生成 SHA-256 数据块。
+- 支持 `read()`、`seek()`、`tell()` 和 `seekable()`，适配 boto3 上传时可能发生的回退重读，避免 `Error: seek`。
 
 核心函数：
 
