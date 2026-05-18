@@ -1,240 +1,653 @@
-# Benchmark Phase 1 Update Notes
+# README Update: VPS MinIO Benchmark Architecture
 
-本文档记录本次针对二期工程项目的阶段 1 更新：基于现有 Python uv 项目骨架，完成 MinIO 基础 IO benchmark 的代码结构、配置、运行入口和测试用例。
+本文档说明当前版本 benchmark 代码的设计逻辑、文件结构、核心函数、配置含义、运行路径和能力范围。
 
-## 1. 本次更新内容
+当前运行背景：
 
-本次更新将原来的最小 Python 项目扩展为标准 `src/` 结构，并实现了面向 S3 兼容对象存储的基础 IO 性能测试框架。
+1. 在本地电脑编写和测试代码。
+2. 将代码提交并 push 到远程 GitHub 仓库。
+3. 实验室 VPS 从远程仓库 `git pull` 最新代码。
+4. MinIO 服务运行在 VPS 本机，或通过 VPN/SSH 跳板映射到 VPS 的 `127.0.0.1:9000`。
+5. 在 VPS 上运行 benchmark 程序，程序通过 S3 API 访问 MinIO。
+6. 测试结果输出到 VPS 当前仓库目录下的 `results/<timestamp>/`。
 
-主要新增能力：
+## 1. 整体设计架构
 
-- 使用 `boto3` 访问 MinIO，后续可通过替换 endpoint 复用到 Ceph RGW。
-- 支持 4 类基础 IO workload：
-  - `seqwrite`：顺序写
-  - `seqread`：顺序读
-  - `randomwrite`：随机写
-  - `randomread`：随机读
-- 支持 smoke/full 两套配置：
-  - `configs/minio-smoke.toml`：轻量验证配置，默认推荐使用。
-  - `configs/minio-full.toml`：按报告规划包含 16KiB、10MiB、4GiB、10GiB 的完整规模配置。
-- 每次运行输出结构化结果：
-  - `metrics.csv`
-  - `metrics.json`
-  - `run_config.toml`
-- 增加单元测试，覆盖配置加载、指标计算和 4 类 IO workload 调用逻辑。
+当前代码是轻量化的 Python/uv 项目，目标是先完成报告阶段 1 的基础 IO 性能测试。整体逻辑是：
 
-## 2. 现有代码模型
+```text
+配置文件 + 环境变量
+        |
+        v
+CLI 入口解析运行参数
+        |
+        v
+加载 benchmark 配置
+        |
+        v
+创建 S3/MinIO 客户端
+        |
+        v
+按顺序执行 IO workload
+        |
+        v
+采集每次读写操作样本
+        |
+        v
+汇总吞吐、延迟、IOPS
+        |
+        v
+输出 CSV/JSON 结果
+```
 
-当前代码按“配置 -> S3 客户端 -> workload 执行 -> sample 采集 -> metric 汇总 -> 结果输出”的流程组织。
+### 1.1 运行链路流程图
 
-运行流程如下：
+```mermaid
+flowchart TD
+    A["Local Dev Machine<br/>edit code and docs"] --> B["GitHub Repo<br/>push changes"]
+    B --> C["Lab VPS<br/>git pull latest code"]
+    C --> D["uv run storage-benchmark run<br/>--config configs/minio-vps-smoke.toml"]
+    D --> E["cli.py<br/>parse args and create run"]
+    E --> F["config.py<br/>load TOML + env overrides"]
+    F --> G["s3_client.py<br/>create boto3 S3 client"]
+    G --> H["MinIO on VPS<br/>http://127.0.0.1:9000"]
+    F --> I["io_basic.py<br/>execute workloads"]
+    I --> G
+    I --> J["metrics.py<br/>collect samples and aggregate metrics"]
+    J --> K["results/<timestamp>/<br/>metrics.csv, metrics.json, run_config.toml"]
+```
 
-1. CLI 读取 TOML 配置文件。
-2. 从环境变量读取 MinIO/S3 连接信息。
-3. 初始化 S3 兼容客户端。
-4. 按配置顺序执行 workload。
-5. 每次对象读写生成一条 `OperationSample`。
-6. 汇总样本，计算吞吐量、平均延迟、P95/P99 延迟和 IOPS。
-7. 将结果写入 `results/<timestamp>/`。
+## 2. 文件夹与文件职责
 
-设计上的关键点：
+当前仓库结构如下：
 
-- 对象存储访问通过 `S3Client` 协议抽象，避免 workload 直接绑定 boto3。
-- 生成测试数据时使用 `DeterministicBytesStream` 流式生成确定性字节，不需要提前在内存中构造大对象。
-- 读取对象时按 `chunk_size` 分块消费 S3 response body，适配 full 配置中的 4GiB/10GiB 大对象。
-- `seqread` 和 `randomread` 依赖前置写入 workload 的 key 集合，通过 `source_workload` 显式声明数据来源。
+```text
+.
+├── configs/
+├── src/storage_benchmark/
+├── tests/
+├── README.md
+├── README-UPDATE.md
+├── main.py
+├── pyproject.toml
+└── uv.lock
+```
 
-## 3. 主要模块说明
+### 2.1 `configs/`
+
+这里存放 benchmark 的运行配置。程序运行时通过 `--config` 指定其中一个 TOML 文件。
+
+运行示例：
+
+```bash
+uv run storage-benchmark run --config configs/minio-vps-smoke.toml
+```
+
+配置文件中的逻辑：
+
+- `[s3]`：对象存储连接配置。
+- `[run]`：本次运行的通用配置。
+- `[[workloads]]`：一个或多个测试任务，程序会按文件中的顺序执行。
+
+文件说明：
+
+`configs/minio-vps-smoke.toml`
+
+- 面向实验室 VPS 的默认 smoke 配置。
+- 默认 endpoint 是 `http://127.0.0.1:9000`。
+- 默认 bucket 是 `benchmark`。
+- 包含 16KiB 小对象随机读写和 10MiB 中等对象顺序读写。
+- 推荐作为 VPS 首次连通性验证配置。
+
+`configs/minio-smoke.toml`
+
+- 通用 smoke 配置。
+- 内容与 VPS smoke 接近，key prefix 使用 `benchmark/smoke/...`。
+- 用于快速验证 MinIO 是否可访问、读写链路是否正常。
+
+`configs/minio-full.toml`
+
+- 完整规模测试配置。
+- 包含 16KiB、10MiB、4GiB、10GiB。
+- 会产生大对象和较长运行时间，只应在确认 VPS、MinIO bucket 容量和网络稳定后运行。
+
+### 2.2 `src/storage_benchmark/`
+
+这里是 benchmark 程序的核心代码。`pyproject.toml` 中将该目录声明为 Python package。
 
 `src/storage_benchmark/cli.py`
 
-- 定义命令行入口 `storage-benchmark run`。
-- 负责加载配置、读取环境变量、创建输出目录、调用 workload 执行器、写出结果。
-- 当缺少 S3 环境变量时，会明确提示缺失项并退出。
+- 命令行入口。
+- 由 `storage-benchmark` 命令调用。
+- 负责串联完整运行流程：解析参数、加载配置、创建客户端、执行 workload、输出结果。
+- 结果输出在配置文件 `[run].output_dir` 指定目录下，默认是 `results/`。
 
 `src/storage_benchmark/config.py`
 
-- 定义配置模型：
+- 配置解析和校验模块。
+- 使用标准库 `dataclasses` 和 `tomllib`，避免额外配置框架依赖。
+- 将 TOML 内容转换为程序内部对象：
+  - `S3Config`
   - `RunConfig`
   - `WorkloadConfig`
   - `BenchmarkConfig`
   - `S3Settings`
-- 支持 `16KiB`、`10MiB`、`4GiB` 等容量字符串解析。
-- 校验 workload 名称唯一性，以及读 workload 的 `source_workload` 是否存在。
+- 支持环境变量覆盖部分配置。
 
 `src/storage_benchmark/s3_client.py`
 
-- 定义 `S3Client` 协议。
-- 实现 `BotoS3Client`，封装 boto3 的 `put_object`、`get_object`、`delete_object`、`list_objects_v2`。
-- 当前用于 MinIO，后续可用于 Ceph RGW。
+- S3/MinIO 访问层。
+- 使用 `boto3` 创建 S3-compatible client。
+- 当前连接 MinIO，后续也可连接 Ceph RGW。
+- 对上层 workload 暴露简单接口：上传对象、读取对象流、删除对象、按 prefix 列出对象。
 
 `src/storage_benchmark/io_basic.py`
 
-- 实现基础 IO workload：
+- 基础 IO workload 实现。
+- 包含四类操作：
   - `seqwrite`
   - `seqread`
   - `randomwrite`
   - `randomread`
-- 实现 `DeterministicBytesStream`，用于流式生成测试对象内容。
-- 实现 `run_workloads`，按配置顺序执行所有 workload。
+- 这里是真正执行 MinIO 读写的核心模块。
 
 `src/storage_benchmark/metrics.py`
 
-- 定义单次操作样本 `OperationSample`。
-- 定义汇总指标 `MetricRecord`。
-- 计算：
-  - 总操作数
-  - 总字节数
-  - 总耗时
-  - 吞吐量 MB/s
-  - 平均延迟 ms
-  - P95/P99 延迟 ms
-  - IOPS
-- 输出 CSV 和 JSON。
+- 指标采集和汇总模块。
+- 将每次对象读写记录为 `OperationSample`。
+- 将样本聚合为 `MetricRecord`。
+- 写出 `metrics.csv` 和 `metrics.json`。
 
-`configs/minio-smoke.toml`
+`src/storage_benchmark/__init__.py`
 
-- 默认轻量配置。
-- 包含：
-  - 16KiB 小对象随机写/随机读，各 20 次。
-  - 10MiB 中等对象顺序写/顺序读，各 1 次。
+- Python package 标识文件。
+- 当前只保存版本号。
 
-`configs/minio-full.toml`
+### 2.3 `tests/`
 
-- 完整测试配置。
-- 包含：
-  - 16KiB 小对象随机读写。
-  - 10MiB 中等对象顺序读写。
-  - 4GiB 大对象顺序读写。
-  - 10GiB 大对象顺序读写。
+这里是本地单元测试。测试不连接真实 MinIO，而是使用 `FakeS3Client` 模拟 S3 行为。
 
-`tests/`
+`tests/conftest.py`
 
-- 使用 mock S3 client，不依赖真实 MinIO。
-- 当前测试文件：
-  - `tests/test_config.py`
-  - `tests/test_metrics.py`
-  - `tests/test_io_basic.py`
+- 定义 `FakeS3Client`。
+- 用内存字典模拟对象存储。
+- 记录 put/get/delete 调用，便于断言 workload 是否按预期访问 S3。
 
-## 4. 如何运行脚本
+`tests/test_config.py`
 
-### 4.1 安装依赖
+- 测试配置加载、容量字符串解析、VPS 默认 endpoint、环境变量覆盖和缺失密钥报错。
 
-```bash
-uv sync --dev
+`tests/test_io_basic.py`
+
+- 测试四类 IO workload 会正确调用 S3 client。
+- 不依赖真实网络或 MinIO。
+
+`tests/test_metrics.py`
+
+- 测试吞吐、平均延迟、P95/P99、IOPS 的计算逻辑。
+
+### 2.4 根目录文件
+
+`pyproject.toml`
+
+- uv/Python 项目配置。
+- 定义项目依赖：当前运行依赖只有 `boto3`。
+- 定义开发依赖：`pytest`。
+- 定义命令行入口：
+
+```toml
+[project.scripts]
+storage-benchmark = "storage_benchmark.cli:main"
 ```
 
-### 4.2 设置 MinIO/S3 环境变量
+`uv.lock`
+
+- uv 锁文件。
+- 保证 VPS 上安装到一致的依赖版本。
+
+`main.py`
+
+- 兼容入口。
+- 直接调用 `storage_benchmark.cli.main()`。
+- 推荐实际运行时使用 `uv run storage-benchmark ...`。
+
+`README.md`
+
+- 简明使用说明。
+
+`README-UPDATE.md`
+
+- 当前文档，解释架构和代码逻辑。
+
+## 3. 配置、变量和核心函数逻辑
+
+### 3.1 配置文件核心字段
+
+以 `configs/minio-vps-smoke.toml` 为例：
+
+```toml
+[s3]
+endpoint_url = "http://127.0.0.1:9000"
+bucket = "benchmark"
+region = "us-east-1"
+use_ssl = false
+```
+
+字段含义：
+
+- `endpoint_url`：MinIO S3 API 地址。VPS 本机 MinIO 或隧道映射时使用 `http://127.0.0.1:9000`。
+- `bucket`：测试对象写入的 bucket。运行前需要确认 bucket 存在。
+- `region`：S3 region。MinIO 通常可使用 `us-east-1`。
+- `use_ssl`：是否启用 HTTPS。当前 VPS 本地测试默认 `false`。
+
+```toml
+[run]
+name = "minio-vps-smoke"
+output_dir = "results"
+seed = 42
+cleanup = false
+```
+
+字段含义：
+
+- `name`：本次配置名称，仅用于识别。
+- `output_dir`：结果输出根目录。默认输出到 `results/<timestamp>/`。
+- `seed`：随机读选择 key 时使用的随机种子，保证结果可复现。
+- `cleanup`：是否在测试后删除本次产生的对象。当前默认 `false`，便于复查 MinIO 中的对象。
+
+```toml
+[[workloads]]
+name = "small-random-write"
+operation = "randomwrite"
+object_size = "16KiB"
+iterations = 20
+chunk_size = "16KiB"
+key_prefix = "benchmark/vps/small"
+```
+
+字段含义：
+
+- `name`：workload 名称，必须唯一。
+- `operation`：操作类型，支持 `seqwrite`、`seqread`、`randomwrite`、`randomread`。
+- `object_size`：单个对象大小，支持 `B`、`KiB`、`MiB`、`GiB` 等写法。
+- `iterations`：执行次数。
+- `chunk_size`：生成或读取数据时的分块大小。
+- `key_prefix`：写入 MinIO 时对象 key 的前缀。
+- `source_workload`：读操作的数据来源，必须指向前面某个写 workload。
+
+### 3.2 环境变量
+
+敏感信息不写入配置文件，通过环境变量提供：
 
 ```bash
 export S3_ACCESS_KEY_ID="minioadmin"
 export S3_SECRET_ACCESS_KEY="minioadmin"
 ```
 
-当前 smoke/VPS 配置默认使用 `http://127.0.0.1:9000` 和 bucket `benchmark`。
-只有当 MinIO 运行在 VPS 本机，或 VPN/SSH 隧道已将 MinIO 映射到 VPS 本地端口时，`127.0.0.1` 才是正确地址。
-
-必填变量：
+必填：
 
 - `S3_ACCESS_KEY_ID`
 - `S3_SECRET_ACCESS_KEY`
 
-可选变量：
+可选覆盖：
 
-- `S3_ENDPOINT_URL`：覆盖配置文件中的 endpoint
-- `S3_BUCKET`：覆盖配置文件中的 bucket
-- `S3_REGION`：默认 `us-east-1`
-- `S3_USE_SSL`：默认 `false`
+- `S3_ENDPOINT_URL`：覆盖 TOML 中的 `[s3].endpoint_url`。
+- `S3_BUCKET`：覆盖 TOML 中的 `[s3].bucket`。
+- `S3_REGION`：覆盖 TOML 中的 `[s3].region`。
+- `S3_USE_SSL`：覆盖 TOML 中的 `[s3].use_ssl`。
 
-### 4.3 运行 smoke benchmark
+配置优先级：
 
-推荐先运行 smoke 配置，确认 MinIO 连通性和基础流程。
-
-```bash
-uv run storage-benchmark run --config configs/minio-smoke.toml
+```text
+环境变量 > TOML 配置文件 > 代码默认值
 ```
 
-### 4.4 运行 full benchmark
+### 3.3 `cli.py` 核心逻辑
 
-full 配置会产生 4GiB 和 10GiB 对象，运行前需要确认网络、磁盘和 MinIO bucket 容量。
+核心函数：
+
+`main(argv=None)`
+
+- 构建命令行解析器。
+- 解析 `storage-benchmark run --config ...`。
+- 分发到 `run(config_path)`。
+
+`build_parser()`
+
+- 使用 `argparse` 定义 CLI。
+- 当前只有一个子命令：`run`。
+- `--config/-c` 默认值是 `configs/minio-smoke.toml`。
+
+`run(config_path)`
+
+- 加载 TOML 配置。
+- 合并配置文件和环境变量，生成 `S3Settings`。
+- 创建 `BotoS3Client`。
+- 使用配置中的 `seed` 创建随机数生成器。
+- 创建输出目录 `results/<timestamp>/`。
+- 调用 `run_workloads(...)` 执行所有测试任务。
+- 调用 `write_metrics(...)` 写出结果。
+- 复制本次配置文件到结果目录中的 `run_config.toml`。
+
+`_create_output_dir(root)`
+
+- 用 UTC 时间生成唯一结果目录。
+- 示例：`results/20260518T162700Z/`。
+
+`_print_records(records)`
+
+- 将汇总指标打印到终端。
+
+#### CLI 函数流程图
+
+```mermaid
+flowchart TD
+    A["main()"] --> B["build_parser()"]
+    B --> C["parse CLI args"]
+    C --> D{"command == run?"}
+    D -- "no" --> E["print help and return 1"]
+    D -- "yes" --> F["run(config_path)"]
+    F --> G["load_config()"]
+    G --> H["S3Settings.from_config_and_env()"]
+    H --> I["BotoS3Client(settings)"]
+    I --> J["_create_output_dir(results)"]
+    J --> K["run_workloads()"]
+    K --> L["write_metrics()"]
+    L --> M["copy run_config.toml"]
+    M --> N["_print_records()"]
+```
+
+### 3.4 `config.py` 核心逻辑
+
+核心数据结构：
+
+- `Operation`：操作类型枚举。
+- `S3Config`：TOML 中 `[s3]` 的配置。
+- `RunConfig`：TOML 中 `[run]` 的配置。
+- `WorkloadConfig`：每个 `[[workloads]]` 的配置。
+- `BenchmarkConfig`：完整配置对象。
+- `S3Settings`：最终用于创建 S3 client 的配置，包含密钥。
+
+核心函数：
+
+`load_config(path)`
+
+- 读取 TOML 文件。
+- 分别解析 `[s3]`、`[run]`、`[[workloads]]`。
+- 调用 `_validate_config(...)` 做基础校验。
+
+`S3Settings.from_config_and_env(config)`
+
+- 从 TOML 的 `S3Config` 读取默认 endpoint、bucket、region、use_ssl。
+- 从环境变量读取敏感信息。
+- 允许环境变量覆盖 endpoint、bucket、region、use_ssl。
+- 缺少 `S3_ACCESS_KEY_ID` 或 `S3_SECRET_ACCESS_KEY` 时直接报错。
+
+`parse_size(value)`
+
+- 将 `"16KiB"`、`"10MiB"`、`"4GiB"` 等字符串转换成字节数。
+
+`parse_bool(value)`
+
+- 将 `true/false`、`yes/no`、`1/0` 等转换成布尔值。
+
+`_validate_config(config)`
+
+- 确认至少有一个 workload。
+- 确认 workload 名称唯一。
+- 确认对象大小、执行次数、chunk size 都大于 0。
+- 确认 `seqread` 和 `randomread` 必须配置 `source_workload`。
+- 确认 `source_workload` 指向已存在的 workload。
+
+### 3.5 `s3_client.py` 核心逻辑
+
+核心结构：
+
+`S3Client`
+
+- Python `Protocol`，定义 workload 需要的最小对象存储接口。
+- 这样测试中可以用 `FakeS3Client` 替代真实 MinIO。
+
+`BotoS3Client`
+
+- 使用 `boto3.client("s3", ...)` 创建真实 S3-compatible client。
+- 当前用于访问 MinIO。
+
+核心方法：
+
+- `put_object(key, body, content_length)`：上传对象。
+- `get_object_stream(key)`：获取对象读取流。
+- `delete_object(key)`：删除对象。
+- `list_keys(prefix)`：列出指定 prefix 下的对象 key。
+
+### 3.6 `io_basic.py` 核心逻辑
+
+核心类：
+
+`DeterministicBytesStream`
+
+- 按需生成确定性字节流。
+- 不会一次性把 4GiB/10GiB 对象放进内存。
+- 基于 `seed + block_index` 生成 SHA-256 数据块。
+
+核心函数：
+
+`run_workloads(workloads, client, rng)`
+
+- 按配置顺序执行所有 workload。
+- 维护 `produced_keys`，记录每个写 workload 产生的对象 key。
+- 读 workload 根据 `source_workload` 找到前置写 workload 的对象。
+
+`seqwrite(workload, client, samples)`
+
+- 顺序生成对象 key。
+- 使用 `DeterministicBytesStream` 生成对象内容。
+- 上传到 MinIO。
+- 记录一次 `OperationSample`。
+
+`seqread(workload, client, produced_keys, samples)`
+
+- 读取 `source_workload` 产生的对象。
+- 按 `chunk_size` 分块读取对象内容。
+- 记录读取耗时和字节数。
+
+`randomwrite(workload, client, samples)`
+
+- 写入多个对象。
+- key 格式是 `key_prefix/name/object-000000.bin`。
+- 用于小对象/中对象 IOPS 测试。
+
+`randomread(workload, client, produced_keys, samples, rng)`
+
+- 从 `source_workload` 的对象集合中随机选择 key。
+- 执行多次读取。
+- 用于随机读延迟和 IOPS 测试。
+
+`cleanup_keys(client, keys_by_workload)`
+
+- 当 `[run].cleanup = true` 时删除本次产生的对象。
+- 当前配置默认不清理。
+
+`_measure_upload(...)`
+
+- 记录上传开始时间。
+- 调用 `client.put_object(...)`。
+- 计算耗时。
+- 生成 `OperationSample`。
+
+`_measure_download(...)`
+
+- 调用 `client.get_object_stream(...)`。
+- 按 chunk 读取直到 EOF。
+- 统计读取总字节数和耗时。
+- 生成 `OperationSample`。
+
+#### Workload 执行流程图
+
+```mermaid
+flowchart TD
+    A["run_workloads()"] --> B["for workload in config order"]
+    B --> C{"operation"}
+    C -- "seqwrite" --> D["seqwrite()<br/>stream data -> put_object"]
+    C -- "seqread" --> E["seqread()<br/>source_workload keys -> get_object_stream"]
+    C -- "randomwrite" --> F["randomwrite()<br/>many keys -> put_object"]
+    C -- "randomread" --> G["randomread()<br/>rng.choice(keys) -> get_object_stream"]
+    D --> H["OperationSample"]
+    E --> H
+    F --> H
+    G --> H
+    H --> I["produced_keys + samples"]
+    I --> B
+    B --> J["return samples, produced_keys"]
+```
+
+### 3.7 `metrics.py` 核心逻辑
+
+核心数据结构：
+
+`OperationSample`
+
+- 表示单次对象操作。
+- 字段包括 workload、operation、object_key、bytes_count、duration_seconds、started_at。
+
+`MetricRecord`
+
+- 表示聚合后的指标。
+- 字段包括 operations、bytes_total、duration_seconds、throughput_mb_s、avg_latency_ms、p95_latency_ms、p99_latency_ms、iops。
+
+核心函数：
+
+`summarize_samples(samples)`
+
+- 按 `(workload, operation)` 分组。
+- 对每组样本计算总字节数、总耗时、吞吐量、平均延迟、P95/P99、IOPS。
+
+`percentile(values, percentile_value)`
+
+- 对延迟列表做线性插值百分位计算。
+
+`write_metrics(output_dir, samples)`
+
+- 创建结果目录。
+- 写出 `metrics.json`。
+- 写出 `metrics.csv`。
+- 返回聚合后的 `MetricRecord` 列表。
+
+指标计算公式：
+
+```text
+throughput_mb_s = bytes_total / 1024 / 1024 / duration_seconds
+avg_latency_ms = duration_seconds / operations * 1000
+iops = operations / duration_seconds
+```
+
+## 4. 运行方式与输出路径
+
+### 4.1 VPS 上首次准备
+
+```bash
+git pull
+uv sync --dev
+```
+
+设置 MinIO 密钥：
+
+```bash
+export S3_ACCESS_KEY_ID="minioadmin"
+export S3_SECRET_ACCESS_KEY="minioadmin"
+```
+
+如果 MinIO 不在 VPS 本机或本地端口不是 `9000`，覆盖 endpoint：
+
+```bash
+export S3_ENDPOINT_URL="http://<minio-host>:9000"
+```
+
+### 4.2 推荐 smoke 测试
+
+```bash
+uv run storage-benchmark run --config configs/minio-vps-smoke.toml
+```
+
+代码运行位置：
+
+```text
+<repo-root>/src/storage_benchmark/
+```
+
+配置读取位置：
+
+```text
+<repo-root>/configs/minio-vps-smoke.toml
+```
+
+结果输出位置：
+
+```text
+<repo-root>/results/<timestamp>/
+```
+
+输出文件：
+
+```text
+metrics.csv
+metrics.json
+run_config.toml
+```
+
+### 4.3 完整测试
 
 ```bash
 uv run storage-benchmark run --config configs/minio-full.toml
 ```
 
-### 4.5 查看输出结果
+注意：完整测试会写入 4GiB 和 10GiB 对象，运行前需要确认 VPS 网络、MinIO bucket、磁盘容量和运行时间窗口。
 
-每次运行会生成一个时间戳目录：
-
-```text
-results/<timestamp>/
-  metrics.csv
-  metrics.json
-  run_config.toml
-```
-
-`metrics.csv` 适合后续做图表和报告分析，`metrics.json` 适合程序化读取。
-
-## 5. 测试维度
-
-当前单元测试覆盖以下维度。
-
-### 5.1 配置加载与校验
-
-文件：`tests/test_config.py`
-
-覆盖内容：
-
-- 容量字符串解析，例如 `16KiB`、`10MB`。
-- `configs/minio-smoke.toml` 可正常加载。
-- `configs/minio-full.toml` 包含报告要求的 16KiB、10MiB、4GiB、10GiB 测试规模。
-- workload 操作类型能正确解析为内部枚举。
-- 读 workload 能通过 `source_workload` 绑定前置写入 workload。
-
-### 5.2 指标计算
-
-文件：`tests/test_metrics.py`
-
-覆盖内容：
-
-- 操作数统计。
-- 总字节数统计。
-- 总耗时统计。
-- 吞吐量 MB/s。
-- 平均延迟 ms。
-- P95/P99 延迟。
-- IOPS。
-
-### 5.3 基础 IO workload 行为
-
-文件：`tests/test_io_basic.py`
-
-覆盖内容：
-
-- `seqwrite` 会调用 S3 `put_object`。
-- `seqread` 会读取 `seqwrite` 生成的对象。
-- `randomwrite` 会生成多个随机写入对象。
-- `randomread` 会从前置随机写入对象集合中选择 key 并调用 S3 `get_object`。
-- 测试使用 `FakeS3Client`，不依赖真实 MinIO 服务。
-
-### 5.4 本地测试命令
+### 4.4 本地单元测试
 
 ```bash
 uv run pytest
 ```
 
-当前验证结果：
+单元测试不会访问真实 MinIO，只验证代码逻辑。
 
-```text
-5 passed
-```
+## 5. 当前版本能力范围
 
-## 6. 后续扩展方向
+当前版本已经支持：
 
-后续阶段可以在当前结构上继续扩展：
+- 在 VPS 上通过 S3 API 访问 MinIO。
+- 使用 `127.0.0.1:9000` 作为默认 VPS MinIO endpoint。
+- 通过环境变量保护 MinIO access key 和 secret key。
+- 用 TOML 文件定义 benchmark 测试任务。
+- 执行 4 类基础 IO：
+  - 顺序写
+  - 顺序读
+  - 随机写
+  - 随机读
+- 流式生成测试对象，避免大对象一次性占用内存。
+- 分块读取对象，支持大对象读取测试。
+- 输出 CSV/JSON 指标结果。
+- 计算吞吐量、平均延迟、P95/P99 延迟、IOPS。
+- 使用 mock S3 client 做单元测试，不依赖真实 MinIO。
+- 后续通过替换 endpoint 连接 Ceph RGW。
 
-- 增加 Ceph RGW 配置文件，只需要替换 S3 endpoint、bucket 和密钥。
-- 增加 GeoTIFF/COG 读取模块，例如 `src/storage_benchmark/geotiff.py`。
-- 增加 GDAL `read window`/tile-based access 测试。
-- 增加结果分析模块，将 `metrics.csv` 转换为性能曲线。
-- 增加并发读写配置，用于测试多 worker 场景下的吞吐和尾延迟。
+当前版本暂不支持：
+
+- GeoTIFF/COG 分块读取。
+- GDAL `read window` 场景。
+- 并发 worker 压测。
+- 自动创建 bucket。
+- 自动部署 MinIO。
+- 自动绘制性能曲线。
+- 跨多台 VPS 的分布式压测。
+- MinIO/Ceph 自动对比报告。
+
+## 6. 后续建议
+
+下一阶段建议按以下顺序扩展：
+
+1. 增加 `--dry-run`，运行前打印将执行的 workload 和 S3 endpoint，避免误跑 full 配置。
+2. 增加 bucket 连通性检查，例如启动时执行一次 `list_objects_v2` 或 head bucket。
+3. 增加并发参数，例如 `workers = 4`，测试并发读写性能。
+4. 增加结果分析脚本，将 `metrics.csv` 转换为图表。
+5. 增加 GeoTIFF/COG 专项模块，测试 tile/window 读取性能。
