@@ -11,6 +11,7 @@ from typing import Sequence
 from storage_benchmark.config import S3Settings, WorkloadConfig, load_config
 from storage_benchmark.io_basic import cleanup_keys, run_workloads
 from storage_benchmark.metrics import MetricRecord, write_metrics
+from storage_benchmark.plotting import generate_plots
 from storage_benchmark.s3_client import BotoS3Client
 
 
@@ -19,6 +20,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return run(args.config)
+    if args.command == "plot":
+        return plot(args.result_dir, args.output_dir)
     parser.print_help()
     return 1
 
@@ -34,6 +37,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("configs/minio-smoke.toml"),
         help="benchmark TOML configuration",
+    )
+
+    plot_parser = subparsers.add_parser("plot", help="generate PNG plots from a result directory")
+    plot_parser.add_argument(
+        "--result-dir",
+        "-r",
+        type=Path,
+        required=True,
+        help="result directory containing metrics.csv and samples.csv",
+    )
+    plot_parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=Path,
+        default=None,
+        help="plot output directory, defaults to <result-dir>/plots",
     )
     return parser
 
@@ -78,6 +97,19 @@ def run(config_path: Path) -> int:
 
     print(f"Benchmark completed: {output_dir}")
     _print_records(records)
+    return 0
+
+
+def plot(result_dir: Path, output_dir: Path | None = None) -> int:
+    try:
+        paths = generate_plots(result_dir, output_dir)
+    except Exception as exc:
+        print(f"Plot generation failed: {exc}")
+        return 1
+
+    print("Generated plots:")
+    for path in paths:
+        print(f"- {path}")
     return 0
 
 
