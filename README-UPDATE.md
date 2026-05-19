@@ -113,6 +113,12 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 - 包含 16KiB、10MiB、4GiB、10GiB。
 - 会产生大对象和较长运行时间，只应在确认 VPS、MinIO bucket 容量和网络稳定后运行。
 
+`configs/minio-matrix.toml`
+
+- 完整矩阵测试配置。
+- 对 16KiB、10MiB、4GiB 分别运行 `seqwrite`、`seqread`、`randomwrite`、`randomread`。
+- 用于需要完整横向对比时显式运行；10GiB 大对象仍只放在 full 配置中，避免矩阵测试流量过大。
+
 ### 2.2 `src/storage_benchmark/`
 
 这里是 benchmark 程序的核心代码。`pyproject.toml` 中将该目录声明为 Python package。
@@ -636,7 +642,15 @@ uv run storage-benchmark run --config configs/minio-full.toml
 
 注意：完整测试会写入 4GiB 和 10GiB 对象，运行前需要确认 VPS 网络、MinIO bucket、磁盘容量和运行时间窗口。
 
-### 4.4 本地单元测试
+### 4.4 完整矩阵测试
+
+```bash
+uv run storage-benchmark run --config configs/minio-matrix.toml
+```
+
+注意：matrix 配置会让 small、medium、large 都覆盖随机读写和顺序读写，适合做完整横向对比，不建议作为日常快速验证。
+
+### 4.5 本地单元测试
 
 ```bash
 uv run pytest

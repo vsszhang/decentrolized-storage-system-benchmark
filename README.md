@@ -54,6 +54,12 @@ Full profile:
 uv run storage-benchmark run --config configs/minio-full.toml
 ```
 
+Matrix profile:
+
+```bash
+uv run storage-benchmark run --config configs/minio-matrix.toml
+```
+
 Each run writes:
 
 - `results/<timestamp>/metrics.csv`
@@ -66,6 +72,12 @@ Each run writes:
 individual read/write operation and includes `repeat_index` for repeat-run
 analysis. The smoke profiles run 3 repeats by default; the full profile keeps
 `repeats = 1` to avoid accidentally multiplying large-object traffic.
+
+Use `smoke` for connectivity and quick validation, `full` for the practical
+MinIO benchmark mix, and `matrix` when you explicitly need every object size to
+cover sequential write/read and random write/read. The matrix profile includes
+16KiB, 10MiB, and 4GiB workloads; the 10GiB large-object case remains only in
+the full profile.
 
 ## Generate Plots
 

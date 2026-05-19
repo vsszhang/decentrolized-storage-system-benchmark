@@ -40,6 +40,23 @@ def test_load_full_config_contains_large_report_workloads() -> None:
     assert 16 * 1024 in sizes
 
 
+def test_load_matrix_config_contains_full_operation_matrix() -> None:
+    config = load_config(ROOT / "configs/minio-matrix.toml")
+    workloads_by_name = {workload.name: workload for workload in config.workloads}
+
+    assert config.run.name == "minio-matrix"
+    assert config.run.repeats == 1
+    assert len(config.workloads) == 12
+    for size_name in ("small", "medium", "large"):
+        assert any(name.startswith(f"{size_name}-seq-write") for name in workloads_by_name)
+        assert any(name.startswith(f"{size_name}-seq-read") for name in workloads_by_name)
+        assert any(name.startswith(f"{size_name}-random-write") for name in workloads_by_name)
+        assert any(name.startswith(f"{size_name}-random-read") for name in workloads_by_name)
+
+    assert workloads_by_name["large-random-read-4gb"].source_workload == "large-random-write-4gb"
+    assert workloads_by_name["large-seq-write-4gb"].object_size == 4 * 1024**3
+
+
 def test_s3_settings_env_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("S3_ENDPOINT_URL", "http://10.0.0.10:9000")
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "access")

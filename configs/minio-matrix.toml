@@ -1,0 +1,114 @@
+[s3]
+endpoint_url = "http://127.0.0.1:9000"
+bucket = "benchmark"
+region = "us-east-1"
+use_ssl = false
+
+[run]
+name = "minio-matrix"
+output_dir = "results"
+seed = 42
+repeats = 1
+cleanup = false
+
+[[workloads]]
+name = "small-seq-write"
+operation = "seqwrite"
+object_size = "16KiB"
+iterations = 100
+chunk_size = "16KiB"
+key_prefix = "benchmark/matrix/small/seq"
+
+[[workloads]]
+name = "small-seq-read"
+operation = "seqread"
+object_size = "16KiB"
+iterations = 100
+chunk_size = "16KiB"
+key_prefix = "benchmark/matrix/small/seq"
+source_workload = "small-seq-write"
+
+[[workloads]]
+name = "small-random-write"
+operation = "randomwrite"
+object_size = "16KiB"
+iterations = 1000
+chunk_size = "16KiB"
+key_prefix = "benchmark/matrix/small/random"
+
+[[workloads]]
+name = "small-random-read"
+operation = "randomread"
+object_size = "16KiB"
+iterations = 1000
+chunk_size = "16KiB"
+key_prefix = "benchmark/matrix/small/random"
+source_workload = "small-random-write"
+
+[[workloads]]
+name = "medium-seq-write"
+operation = "seqwrite"
+object_size = "10MiB"
+iterations = 10
+chunk_size = "1MiB"
+key_prefix = "benchmark/matrix/medium/seq"
+
+[[workloads]]
+name = "medium-seq-read"
+operation = "seqread"
+object_size = "10MiB"
+iterations = 10
+chunk_size = "1MiB"
+key_prefix = "benchmark/matrix/medium/seq"
+source_workload = "medium-seq-write"
+
+[[workloads]]
+name = "medium-random-write"
+operation = "randomwrite"
+object_size = "10MiB"
+iterations = 10
+chunk_size = "1MiB"
+key_prefix = "benchmark/matrix/medium/random"
+
+[[workloads]]
+name = "medium-random-read"
+operation = "randomread"
+object_size = "10MiB"
+iterations = 10
+chunk_size = "1MiB"
+key_prefix = "benchmark/matrix/medium/random"
+source_workload = "medium-random-write"
+
+[[workloads]]
+name = "large-seq-write-4gb"
+operation = "seqwrite"
+object_size = "4GiB"
+iterations = 1
+chunk_size = "8MiB"
+key_prefix = "benchmark/matrix/large/seq"
+
+[[workloads]]
+name = "large-seq-read-4gb"
+operation = "seqread"
+object_size = "4GiB"
+iterations = 1
+chunk_size = "8MiB"
+key_prefix = "benchmark/matrix/large/seq"
+source_workload = "large-seq-write-4gb"
+
+[[workloads]]
+name = "large-random-write-4gb"
+operation = "randomwrite"
+object_size = "4GiB"
+iterations = 1
+chunk_size = "8MiB"
+key_prefix = "benchmark/matrix/large/random"
+
+[[workloads]]
+name = "large-random-read-4gb"
+operation = "randomread"
+object_size = "4GiB"
+iterations = 1
+chunk_size = "8MiB"
+key_prefix = "benchmark/matrix/large/random"
+source_workload = "large-random-write-4gb"
