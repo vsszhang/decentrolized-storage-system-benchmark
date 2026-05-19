@@ -67,6 +67,21 @@ individual read/write operation and includes `repeat_index` for repeat-run
 analysis. The smoke profiles run 3 repeats by default; the full profile keeps
 `repeats = 1` to avoid accidentally multiplying large-object traffic.
 
+## Generate Plots
+
+After a benchmark run, generate matplotlib PNG charts from the result directory:
+
+```bash
+uv run storage-benchmark plot --result-dir results/<timestamp>
+```
+
+This writes:
+
+- `results/<timestamp>/plots/throughput_mb_s.png`
+- `results/<timestamp>/plots/iops.png`
+- `results/<timestamp>/plots/latency_summary_ms.png`
+- `results/<timestamp>/plots/latency_distribution_ms.png`
+
 ## Tests
 
 ```bash

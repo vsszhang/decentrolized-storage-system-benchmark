@@ -55,6 +55,8 @@ flowchart TD
     I --> G
     I --> J["metrics.py<br/>collect samples and aggregate metrics"]
     J --> K["results/<timestamp>/<br/>metrics.csv/json, samples.csv/json, run_config.toml"]
+    K --> L["plotting.py<br/>generate matplotlib PNG charts"]
+    L --> M["results/<timestamp>/plots/"]
 ```
 
 ## 2. 文件夹与文件职责
@@ -157,6 +159,12 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 - 将每次对象读写记录为 `OperationSample`。
 - 将样本聚合为 `MetricRecord`。
 - 写出 `metrics.csv` 和 `metrics.json`。
+
+`src/storage_benchmark/plotting.py`
+
+- 结果可视化模块。
+- 从 `results/<timestamp>/metrics.csv` 和 `samples.csv` 读取数据。
+- 使用 matplotlib 生成吞吐、IOPS、延迟摘要和延迟分布图。
 
 `src/storage_benchmark/__init__.py`
 
@@ -538,6 +546,12 @@ flowchart TD
 - 写出 `samples.csv`。
 - 返回聚合后的 `MetricRecord` 列表。
 
+`generate_plots(result_dir, output_dir)`
+
+- 读取 `result_dir/metrics.csv` 和 `result_dir/samples.csv`。
+- 默认输出到 `result_dir/plots/`。
+- 生成 `throughput_mb_s.png`、`iops.png`、`latency_summary_ms.png`、`latency_distribution_ms.png`。
+
 指标计算公式：
 
 ```text
@@ -600,6 +614,18 @@ metrics.json
 samples.csv
 samples.json
 run_config.toml
+```
+
+生成图表：
+
+```bash
+uv run storage-benchmark plot --result-dir results/<timestamp>
+```
+
+输出位置：
+
+```text
+<repo-root>/results/<timestamp>/plots/
 ```
 
 ### 4.3 完整测试
