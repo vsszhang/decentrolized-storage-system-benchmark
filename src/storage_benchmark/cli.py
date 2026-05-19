@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import random
 import shutil
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
 
-from storage_benchmark.config import S3Settings, load_config
+from storage_benchmark.config import S3Settings, WorkloadConfig, load_config
 from storage_benchmark.io_basic import cleanup_keys, run_workloads
 from storage_benchmark.metrics import MetricRecord, write_metrics
 from storage_benchmark.s3_client import BotoS3Client
@@ -50,7 +51,22 @@ def run(config_path: Path) -> int:
     output_dir = _create_output_dir(benchmark_config.run.output_dir)
 
     try:
-        samples, keys_by_workload = run_workloads(benchmark_config.workloads, client, rng)
+        samples = []
+        keys_by_workload = {}
+        for repeat_index in range(1, benchmark_config.run.repeats + 1):
+            repeat_workloads = _workloads_for_repeat(
+                benchmark_config.workloads,
+                repeat_index,
+                benchmark_config.run.repeats,
+            )
+            repeat_samples, repeat_keys = run_workloads(
+                repeat_workloads,
+                client,
+                rng,
+                repeat_index=repeat_index,
+            )
+            samples.extend(repeat_samples)
+            _merge_keys(keys_by_workload, repeat_keys)
         records = write_metrics(output_dir, samples)
         shutil.copyfile(config_path, output_dir / "run_config.toml")
         if benchmark_config.run.cleanup:
@@ -63,6 +79,29 @@ def run(config_path: Path) -> int:
     print(f"Benchmark completed: {output_dir}")
     _print_records(records)
     return 0
+
+
+def _workloads_for_repeat(
+    workloads: list[WorkloadConfig],
+    repeat_index: int,
+    repeats: int,
+) -> list[WorkloadConfig]:
+    if repeats == 1:
+        return workloads
+
+    suffix = f"repeat-{repeat_index:03d}"
+    return [
+        replace(workload, key_prefix=f"{workload.key_prefix}/{suffix}")
+        for workload in workloads
+    ]
+
+
+def _merge_keys(
+    keys_by_workload: dict[str, list[str]],
+    repeat_keys: dict[str, list[str]],
+) -> None:
+    for workload_name, keys in repeat_keys.items():
+        keys_by_workload.setdefault(workload_name, []).extend(keys)
 
 
 def _create_output_dir(root: Path) -> Path:

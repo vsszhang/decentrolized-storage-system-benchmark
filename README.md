@@ -58,7 +58,14 @@ Each run writes:
 
 - `results/<timestamp>/metrics.csv`
 - `results/<timestamp>/metrics.json`
+- `results/<timestamp>/samples.csv`
+- `results/<timestamp>/samples.json`
 - `results/<timestamp>/run_config.toml`
+
+`metrics.*` contains aggregated workload metrics. `samples.*` contains every
+individual read/write operation and includes `repeat_index` for repeat-run
+analysis. The smoke profiles run 3 repeats by default; the full profile keeps
+`repeats = 1` to avoid accidentally multiplying large-object traffic.
 
 ## Tests
 

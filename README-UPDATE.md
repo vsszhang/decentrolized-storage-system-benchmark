@@ -54,7 +54,7 @@ flowchart TD
     F --> I["io_basic.py<br/>execute workloads"]
     I --> G
     I --> J["metrics.py<br/>collect samples and aggregate metrics"]
-    J --> K["results/<timestamp>/<br/>metrics.csv, metrics.json, run_config.toml"]
+    J --> K["results/<timestamp>/<br/>metrics.csv/json, samples.csv/json, run_config.toml"]
 ```
 
 ## 2. 文件夹与文件职责
@@ -245,6 +245,7 @@ use_ssl = false
 name = "minio-vps-smoke"
 output_dir = "results"
 seed = 42
+repeats = 3
 cleanup = false
 ```
 
@@ -253,6 +254,7 @@ cleanup = false
 - `name`：本次配置名称，仅用于识别。
 - `output_dir`：结果输出根目录。默认输出到 `results/<timestamp>/`。
 - `seed`：随机读选择 key 时使用的随机种子，保证结果可复现。
+- `repeats`：整组 workload 的重复执行次数。smoke/VPS smoke 默认 3 次，full 默认 1 次，避免大对象流量被意外放大。
 - `cleanup`：是否在测试后删除本次产生的对象。当前默认 `false`，便于复查 MinIO 中的对象。
 
 ```toml
@@ -532,6 +534,8 @@ flowchart TD
 - 创建结果目录。
 - 写出 `metrics.json`。
 - 写出 `metrics.csv`。
+- 写出 `samples.json`。
+- 写出 `samples.csv`。
 - 返回聚合后的 `MetricRecord` 列表。
 
 指标计算公式：
@@ -593,6 +597,8 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 ```text
 metrics.csv
 metrics.json
+samples.csv
+samples.json
 run_config.toml
 ```
 

@@ -22,6 +22,7 @@ def test_load_smoke_config() -> None:
     assert config.run.name == "minio-smoke"
     assert config.s3.endpoint_url == "http://127.0.0.1:9000"
     assert config.s3.bucket == "benchmark"
+    assert config.run.repeats == 3
     assert len(config.workloads) == 4
     assert config.workloads[0].operation == Operation.RANDOMWRITE
     assert config.workloads[0].object_size == 16 * 1024
@@ -32,6 +33,7 @@ def test_load_full_config_contains_large_report_workloads() -> None:
     config = load_config(ROOT / "configs/minio-full.toml")
     sizes = {workload.object_size for workload in config.workloads}
 
+    assert config.run.repeats == 1
     assert 4 * 1024**3 in sizes
     assert 10 * 1024**3 in sizes
     assert 10 * 1024**2 in sizes

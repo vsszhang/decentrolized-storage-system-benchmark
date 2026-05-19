@@ -14,6 +14,7 @@ class OperationSample:
     bytes_count: int
     duration_seconds: float
     started_at: str
+    repeat_index: int = 1
 
 
 @dataclass(frozen=True)
@@ -82,4 +83,16 @@ def write_metrics(output_dir: Path, samples: list[OperationSample]) -> list[Metr
         for record in records:
             writer.writerow(asdict(record))
 
+    _write_samples(output_dir, samples)
     return records
+
+
+def _write_samples(output_dir: Path, samples: list[OperationSample]) -> None:
+    with (output_dir / "samples.json").open("w", encoding="utf-8") as json_file:
+        json.dump([asdict(sample) for sample in samples], json_file, indent=2)
+
+    with (output_dir / "samples.csv").open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=list(OperationSample.__dataclass_fields__))
+        writer.writeheader()
+        for sample in samples:
+            writer.writerow(asdict(sample))

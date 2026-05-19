@@ -77,19 +77,20 @@ def run_workloads(
     workloads: list[WorkloadConfig],
     client: S3Client,
     rng: random.Random,
+    repeat_index: int = 1,
 ) -> tuple[list[OperationSample], dict[str, list[str]]]:
     samples: list[OperationSample] = []
     produced_keys: dict[str, list[str]] = {}
 
     for workload in workloads:
         if workload.operation == Operation.SEQWRITE:
-            keys = seqwrite(workload, client, samples)
+            keys = seqwrite(workload, client, samples, repeat_index)
         elif workload.operation == Operation.SEQREAD:
-            keys = seqread(workload, client, produced_keys, samples)
+            keys = seqread(workload, client, produced_keys, samples, repeat_index)
         elif workload.operation == Operation.RANDOMWRITE:
-            keys = randomwrite(workload, client, samples)
+            keys = randomwrite(workload, client, samples, repeat_index)
         elif workload.operation == Operation.RANDOMREAD:
-            keys = randomread(workload, client, produced_keys, samples, rng)
+            keys = randomread(workload, client, produced_keys, samples, rng, repeat_index)
         else:
             raise ValueError(f"unsupported operation: {workload.operation}")
         produced_keys[workload.name] = keys
@@ -97,12 +98,17 @@ def run_workloads(
     return samples, produced_keys
 
 
-def seqwrite(workload: WorkloadConfig, client: S3Client, samples: list[OperationSample]) -> list[str]:
+def seqwrite(
+    workload: WorkloadConfig,
+    client: S3Client,
+    samples: list[OperationSample],
+    repeat_index: int = 1,
+) -> list[str]:
     keys: list[str] = []
     for index in range(workload.iterations):
         key = f"{workload.key_prefix}/{workload.name}/{index:06d}.bin"
         stream = DeterministicBytesStream(workload.object_size, key, workload.chunk_size)
-        samples.append(_measure_upload(workload, client, key, stream))
+        samples.append(_measure_upload(workload, client, key, stream, repeat_index))
         keys.append(key)
     return keys
 
@@ -112,19 +118,25 @@ def seqread(
     client: S3Client,
     produced_keys: MutableMapping[str, list[str]],
     samples: list[OperationSample],
+    repeat_index: int = 1,
 ) -> list[str]:
     keys = _source_keys(workload, produced_keys)
     for key in keys[: workload.iterations]:
-        samples.append(_measure_download(workload, client, key))
+        samples.append(_measure_download(workload, client, key, repeat_index))
     return keys
 
 
-def randomwrite(workload: WorkloadConfig, client: S3Client, samples: list[OperationSample]) -> list[str]:
+def randomwrite(
+    workload: WorkloadConfig,
+    client: S3Client,
+    samples: list[OperationSample],
+    repeat_index: int = 1,
+) -> list[str]:
     keys: list[str] = []
     for index in range(workload.iterations):
         key = f"{workload.key_prefix}/{workload.name}/object-{index:06d}.bin"
         stream = DeterministicBytesStream(workload.object_size, key, workload.chunk_size)
-        samples.append(_measure_upload(workload, client, key, stream))
+        samples.append(_measure_upload(workload, client, key, stream, repeat_index))
         keys.append(key)
     return keys
 
@@ -135,11 +147,12 @@ def randomread(
     produced_keys: MutableMapping[str, list[str]],
     samples: list[OperationSample],
     rng: random.Random,
+    repeat_index: int = 1,
 ) -> list[str]:
     keys = _source_keys(workload, produced_keys)
     for _ in range(workload.iterations):
         key = rng.choice(keys)
-        samples.append(_measure_download(workload, client, key))
+        samples.append(_measure_download(workload, client, key, repeat_index))
     return keys
 
 
@@ -168,6 +181,7 @@ def _measure_upload(
     client: S3Client,
     key: str,
     body: DeterministicBytesStream,
+    repeat_index: int = 1,
 ) -> OperationSample:
     started_at = datetime.now(UTC).isoformat()
     started = time.perf_counter()
@@ -179,10 +193,16 @@ def _measure_upload(
         bytes_count=workload.object_size,
         duration_seconds=time.perf_counter() - started,
         started_at=started_at,
+        repeat_index=repeat_index,
     )
 
 
-def _measure_download(workload: WorkloadConfig, client: S3Client, key: str) -> OperationSample:
+def _measure_download(
+    workload: WorkloadConfig,
+    client: S3Client,
+    key: str,
+    repeat_index: int = 1,
+) -> OperationSample:
     started_at = datetime.now(UTC).isoformat()
     started = time.perf_counter()
     bytes_count = 0
@@ -204,4 +224,5 @@ def _measure_download(workload: WorkloadConfig, client: S3Client, key: str) -> O
         bytes_count=bytes_count,
         duration_seconds=time.perf_counter() - started,
         started_at=started_at,
+        repeat_index=repeat_index,
     )

@@ -28,6 +28,7 @@ class RunConfig:
     name: str = "benchmark"
     output_dir: Path = Path("results")
     seed: int = 42
+    repeats: int = 1
     cleanup: bool = False
 
 
@@ -113,6 +114,7 @@ def _load_run_config(raw: dict[str, Any]) -> RunConfig:
         name=str(raw.get("name", "benchmark")),
         output_dir=Path(raw.get("output_dir", "results")),
         seed=int(raw.get("seed", 42)),
+        repeats=int(raw.get("repeats", 1)),
         cleanup=parse_bool(raw.get("cleanup", False)),
     )
 
@@ -133,6 +135,8 @@ def _load_workload_config(raw: dict[str, Any]) -> WorkloadConfig:
 def _validate_config(config: BenchmarkConfig) -> None:
     if not config.workloads:
         raise ValueError("at least one workload is required")
+    if config.run.repeats <= 0:
+        raise ValueError("run repeats must be positive")
 
     names: set[str] = set()
     for workload in config.workloads:

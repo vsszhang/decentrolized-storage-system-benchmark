@@ -61,6 +61,30 @@ source_workload = "random-write"
     assert len(produced["seq-write"]) == 2
     assert len(produced["random-write"]) == 3
     assert all(sample.bytes_count > 0 for sample in samples)
+    assert {sample.repeat_index for sample in samples} == {1}
+
+
+def test_basic_io_workloads_preserve_repeat_index(tmp_path: Path) -> None:
+    config_path = tmp_path / "benchmark.toml"
+    config_path.write_text(
+        """
+[[workloads]]
+name = "write"
+operation = "randomwrite"
+object_size = "128B"
+iterations = 2
+chunk_size = "64B"
+key_prefix = "test/repeat"
+""",
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    client = FakeS3Client()
+
+    samples, _ = run_workloads(config.workloads, client, random.Random(7), repeat_index=2)
+
+    assert len(samples) == 2
+    assert {sample.repeat_index for sample in samples} == {2}
 
 
 def test_deterministic_stream_supports_seek_and_reread() -> None:

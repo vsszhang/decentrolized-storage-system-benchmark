@@ -8,6 +8,7 @@ use_ssl = false
 name = "minio-full"
 output_dir = "results"
 seed = 42
+repeats = 1
 cleanup = false
 
 [[workloads]]
