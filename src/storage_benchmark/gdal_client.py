@@ -8,12 +8,17 @@ from urllib.parse import urlparse
 from storage_benchmark.config import S3Settings
 
 
+def rasterio_session_kwargs(settings: S3Settings) -> dict[str, str]:
+    return {
+        "aws_access_key_id": settings.access_key_id,
+        "aws_secret_access_key": settings.secret_access_key,
+        "region_name": settings.region,
+        "endpoint_url": _endpoint_without_scheme(settings.endpoint_url),
+    }
+
+
 def rasterio_env_kwargs(settings: S3Settings) -> dict[str, str]:
     return {
-        "AWS_ACCESS_KEY_ID": settings.access_key_id,
-        "AWS_SECRET_ACCESS_KEY": settings.secret_access_key,
-        "AWS_REGION": settings.region,
-        "AWS_S3_ENDPOINT": _endpoint_without_scheme(settings.endpoint_url),
         "AWS_HTTPS": "YES" if settings.use_ssl else "NO",
         "AWS_VIRTUAL_HOSTING": "FALSE",
     }
@@ -26,8 +31,10 @@ def vsi_s3_path(bucket: str, object_key: str) -> str:
 @contextmanager
 def open_raster(settings: S3Settings, bucket: str, object_key: str) -> Iterator[Any]:
     import rasterio
+    from rasterio.session import AWSSession
 
-    with rasterio.Env(**rasterio_env_kwargs(settings)):
+    session = AWSSession(**rasterio_session_kwargs(settings))
+    with rasterio.Env(session=session, **rasterio_env_kwargs(settings)):
         with rasterio.open(vsi_s3_path(bucket, object_key)) as dataset:
             yield dataset
 
