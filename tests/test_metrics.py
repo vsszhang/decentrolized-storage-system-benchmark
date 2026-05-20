@@ -51,6 +51,7 @@ def test_write_metrics_writes_aggregates_and_raw_samples(tmp_path) -> None:
             "duration_seconds": 0.1,
             "started_at": "t0",
             "repeat_index": 1,
+            "details": "",
         },
         {
             "workload": "w",
@@ -60,6 +61,7 @@ def test_write_metrics_writes_aggregates_and_raw_samples(tmp_path) -> None:
             "duration_seconds": 0.2,
             "started_at": "t1",
             "repeat_index": 2,
+            "details": "",
         },
     ]
 
@@ -68,3 +70,4 @@ def test_write_metrics_writes_aggregates_and_raw_samples(tmp_path) -> None:
     assert [row["object_key"] for row in csv_rows] == ["a", "b"]
     assert [row["duration_seconds"] for row in csv_rows] == ["0.1", "0.2"]
     assert [row["repeat_index"] for row in csv_rows] == ["1", "2"]
+    assert [row["details"] for row in csv_rows] == ["", ""]

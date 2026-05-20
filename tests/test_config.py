@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from storage_benchmark.config import Operation, S3Config, S3Settings, load_config, parse_size
+from storage_benchmark.config import (
+    CogOperation,
+    Operation,
+    S3Config,
+    S3Settings,
+    load_config,
+    parse_size,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +62,62 @@ def test_load_matrix_config_contains_full_operation_matrix() -> None:
 
     assert workloads_by_name["large-random-read-4gb"].source_workload == "large-random-write-4gb"
     assert workloads_by_name["large-seq-write-4gb"].object_size == 4 * 1024**3
+
+
+def test_load_cog_smoke_config() -> None:
+    config = load_config(ROOT / "configs/minio-cog-smoke.toml")
+    workloads_by_name = {workload.name: workload for workload in config.cog_workloads}
+
+    assert config.run.name == "minio-cog-smoke"
+    assert config.s3.endpoint_url == "http://127.0.0.1:9000"
+    assert config.s3.bucket == "benchmark"
+    assert config.run.repeats == 3
+    assert config.workloads == []
+    assert len(config.cog_workloads) == 4
+    assert workloads_by_name["cog-info"].operation == CogOperation.COGINFO
+    assert workloads_by_name["cog-full-read"].band_indexes == [1]
+    assert workloads_by_name["cog-random-window"].window_width == 512
+    assert workloads_by_name["cog-tile-window"].window_height == 512
+
+
+def test_load_mixed_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed.toml"
+    config_path.write_text(
+        """
+[[workloads]]
+name = "write"
+operation = "seqwrite"
+object_size = "1KiB"
+
+[[cog_workloads]]
+name = "cog-info"
+operation = "coginfo"
+object_key = "cog/sample.tif"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert len(config.workloads) == 1
+    assert len(config.cog_workloads) == 1
+
+
+def test_invalid_cog_window_config_raises(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad-cog.toml"
+    config_path.write_text(
+        """
+[[cog_workloads]]
+name = "bad-window"
+operation = "randomwindow"
+object_key = "cog/sample.tif"
+iterations = 1
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires window_width and window_height"):
+        load_config(config_path)
 
 
 def test_s3_settings_env_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
