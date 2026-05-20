@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
+
+COG_OPERATIONS = {"coginfo", "fullread", "randomwindow", "tilewindow"}
 
 
 def generate_plots(result_dir: Path, output_dir: Path | None = None) -> list[Path]:
@@ -40,6 +43,8 @@ def generate_plots(result_dir: Path, output_dir: Path | None = None) -> list[Pat
         _plot_latency_summary(plt, metrics, output / "latency_summary_ms.png"),
         _plot_latency_distribution(plt, samples, output / "latency_distribution_ms.png"),
     ]
+    if _has_cog_samples(samples):
+        paths.extend(_generate_cog_plots(plt, metrics, samples, output))
     return paths
 
 
@@ -130,6 +135,126 @@ def _plot_latency_distribution(plt, rows: list[dict[str, str]], path: Path) -> P
     fig.savefig(path, dpi=160)
     plt.close(fig)
     return path
+
+
+def _generate_cog_plots(plt, metrics: list[dict[str, str]], samples: list[dict[str, str]], output: Path) -> list[Path]:
+    cog_metrics = [row for row in metrics if row["operation"] in COG_OPERATIONS]
+    cog_samples = [row for row in samples if row["operation"] in COG_OPERATIONS]
+    paths = [
+        _plot_cog_latency_by_operation(plt, cog_samples, output / "cog_latency_by_operation_ms.png"),
+        _plot_cog_read_size_by_operation(plt, cog_metrics, output / "cog_read_size_mb.png"),
+        _plot_cog_latency_over_time(plt, cog_samples, output / "cog_latency_over_time_ms.png"),
+    ]
+
+    window_samples = [_with_details(row) for row in cog_samples if row["operation"] in {"randomwindow", "tilewindow"}]
+    window_samples = [row for row in window_samples if "window" in row["_details"]]
+    if window_samples:
+        paths.append(
+            _plot_cog_window_latency_scatter(
+                plt,
+                window_samples,
+                output / "cog_window_latency_scatter_ms.png",
+            )
+        )
+    return paths
+
+
+def _plot_cog_latency_by_operation(plt, rows: list[dict[str, str]], path: Path) -> Path:
+    grouped: dict[str, list[float]] = {}
+    for row in rows:
+        grouped.setdefault(row["operation"], []).append(_float(row, "duration_seconds") * 1000)
+
+    labels = list(grouped)
+    values = [grouped[label] for label in labels]
+    fig, ax = plt.subplots(figsize=_figure_size(labels))
+    ax.boxplot(values, tick_labels=labels, showfliers=True)
+    ax.set_title("COG Latency by Operation")
+    ax.set_ylabel("Latency (ms)")
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
+def _plot_cog_read_size_by_operation(plt, rows: list[dict[str, str]], path: Path) -> Path:
+    labels = [row["operation"] for row in rows]
+    values = [_float(row, "bytes_total") / 1024 / 1024 for row in rows]
+
+    fig, ax = plt.subplots(figsize=_figure_size(labels))
+    ax.bar(labels, values, color="#0f766e")
+    ax.set_title("COG Read Volume by Operation")
+    ax.set_ylabel("Read volume (MiB)")
+    ax.grid(axis="y", alpha=0.25)
+    ax.tick_params(axis="x", labelrotation=20)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
+def _plot_cog_latency_over_time(plt, rows: list[dict[str, str]], path: Path) -> Path:
+    grouped: dict[str, list[float]] = {}
+    for row in rows:
+        grouped.setdefault(row["operation"], []).append(_float(row, "duration_seconds") * 1000)
+
+    fig, ax = plt.subplots(figsize=(max(8.0, max((len(values) for values in grouped.values()), default=1) * 0.25), 5.0))
+    for label, values in grouped.items():
+        ax.plot(range(1, len(values) + 1), values, marker="o", markersize=3, linewidth=1.2, label=label)
+    ax.set_title("COG Latency by Sample Order")
+    ax.set_xlabel("Sample order within operation")
+    ax.set_ylabel("Latency (ms)")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
+def _plot_cog_window_latency_scatter(plt, rows: list[dict[str, str]], path: Path) -> Path:
+    x_values = [row["_details"]["window"]["col_off"] for row in rows]
+    y_values = [row["_details"]["window"]["row_off"] for row in rows]
+    latencies = [_float(row, "duration_seconds") * 1000 for row in rows]
+    labels = [row["operation"] for row in rows]
+    markers = {"randomwindow": "o", "tilewindow": "s"}
+
+    fig, ax = plt.subplots(figsize=(8.0, 6.0))
+    for operation in sorted(set(labels)):
+        indexes = [index for index, label in enumerate(labels) if label == operation]
+        scatter = ax.scatter(
+            [x_values[index] for index in indexes],
+            [y_values[index] for index in indexes],
+            c=[latencies[index] for index in indexes],
+            cmap="viridis",
+            marker=markers.get(operation, "o"),
+            label=operation,
+            edgecolors="black",
+            linewidths=0.3,
+        )
+    ax.set_title("COG Window Latency by Image Position")
+    ax.set_xlabel("Column offset")
+    ax.set_ylabel("Row offset")
+    ax.invert_yaxis()
+    ax.grid(alpha=0.2)
+    ax.legend()
+    fig.colorbar(scatter, ax=ax, label="Latency (ms)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
+def _has_cog_samples(rows: list[dict[str, str]]) -> bool:
+    return any(row["operation"] in COG_OPERATIONS for row in rows)
+
+
+def _with_details(row: dict[str, str]) -> dict[str, object]:
+    try:
+        details = json.loads(row.get("details", "") or "{}")
+    except json.JSONDecodeError:
+        details = {}
+    return {**row, "_details": details}
 
 
 def _figure_size(labels: list[str]) -> tuple[float, float]:
