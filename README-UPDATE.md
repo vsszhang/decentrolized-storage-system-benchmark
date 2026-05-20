@@ -658,6 +658,11 @@ flowchart TD
 - 读取 `result_dir/metrics.csv` 和 `result_dir/samples.csv`。
 - 默认输出到 `result_dir/plots/`。
 - 生成 `throughput_mb_s.png`、`iops.png`、`latency_summary_ms.png`、`latency_distribution_ms.png`。
+- 如果样本中包含 COG/GDAL 操作，还会额外生成：
+  - `cog_latency_by_operation_ms.png`
+  - `cog_read_size_mb.png`
+  - `cog_latency_over_time_ms.png`
+  - `cog_window_latency_scatter_ms.png`
 
 指标计算公式：
 

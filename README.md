@@ -113,6 +113,13 @@ This writes:
 - `<result-dir>/plots/latency_summary_ms.png`
 - `<result-dir>/plots/latency_distribution_ms.png`
 
+For COG/GDAL result directories, the same command also writes:
+
+- `<result-dir>/plots/cog_latency_by_operation_ms.png`
+- `<result-dir>/plots/cog_read_size_mb.png`
+- `<result-dir>/plots/cog_latency_over_time_ms.png`
+- `<result-dir>/plots/cog_window_latency_scatter_ms.png`
+
 ## Tests
 
 ```bash
