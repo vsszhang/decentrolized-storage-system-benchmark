@@ -1,8 +1,9 @@
 # Decentralized Storage System Benchmark
 
 Python/uv benchmark tools for S3-compatible object storage systems. The current
-phase implements lightweight basic IO workloads for MinIO on a lab VPS, while
-keeping the S3 access layer compatible with future Ceph RGW testing.
+phase implements lightweight basic IO workloads and COG/GDAL read workloads for
+MinIO on a lab VPS, while keeping the S3 access layer compatible with future
+Ceph RGW testing.
 
 ## Setup
 
@@ -60,18 +61,36 @@ Matrix profile:
 uv run storage-benchmark run --config configs/minio-matrix.toml
 ```
 
+COG/GDAL smoke profile:
+
+```bash
+uv run storage-benchmark run --config configs/minio-cog-smoke.toml
+```
+
+The COG/GDAL profile expects an existing COG object in MinIO. The default config
+reads `s3://benchmark/cog/sample.tif`, so upload or copy a COG to that key before
+running the benchmark.
+
 Each run writes:
 
-- `results/<timestamp>/metrics.csv`
-- `results/<timestamp>/metrics.json`
-- `results/<timestamp>/samples.csv`
-- `results/<timestamp>/samples.json`
-- `results/<timestamp>/run_config.toml`
+- `results/io/<timestamp>/...` for basic IO-only configs
+- `results/cog/<timestamp>/...` for COG/GDAL-only configs
+- `results/mixed/<timestamp>/...` for configs containing both
+
+Each result directory contains:
+
+- `metrics.csv`
+- `metrics.json`
+- `samples.csv`
+- `samples.json`
+- `run_config.toml`
 
 `metrics.*` contains aggregated workload metrics. `samples.*` contains every
 individual read/write operation and includes `repeat_index` for repeat-run
-analysis. The smoke profiles run 3 repeats by default; the full profile keeps
-`repeats = 1` to avoid accidentally multiplying large-object traffic.
+analysis. COG/GDAL samples also include a `details` column for dataset metadata
+and window coordinates. The smoke profiles run 3 repeats by default; the full
+profile keeps `repeats = 1` to avoid accidentally multiplying large-object
+traffic.
 
 Use `smoke` for connectivity and quick validation, `full` for the practical
 MinIO benchmark mix, and `matrix` when you explicitly need every object size to
@@ -84,15 +103,15 @@ the full profile.
 After a benchmark run, generate matplotlib PNG charts from the result directory:
 
 ```bash
-uv run storage-benchmark plot --result-dir results/<timestamp>
+uv run storage-benchmark plot --result-dir results/io/<timestamp>
 ```
 
 This writes:
 
-- `results/<timestamp>/plots/throughput_mb_s.png`
-- `results/<timestamp>/plots/iops.png`
-- `results/<timestamp>/plots/latency_summary_ms.png`
-- `results/<timestamp>/plots/latency_distribution_ms.png`
+- `<result-dir>/plots/throughput_mb_s.png`
+- `<result-dir>/plots/iops.png`
+- `<result-dir>/plots/latency_summary_ms.png`
+- `<result-dir>/plots/latency_distribution_ms.png`
 
 ## Tests
 

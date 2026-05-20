@@ -9,11 +9,11 @@
 3. 实验室 VPS 从远程仓库 `git pull` 最新代码。
 4. MinIO 服务运行在 VPS 本机，或通过 VPN/SSH 跳板映射到 VPS 的 `127.0.0.1:9000`。
 5. 在 VPS 上运行 benchmark 程序，程序通过 S3 API 访问 MinIO。
-6. 测试结果输出到 VPS 当前仓库目录下的 `results/<timestamp>/`。
+6. 测试结果输出到 VPS 当前仓库目录下的 `results/io/<timestamp>/`、`results/cog/<timestamp>/` 或 `results/mixed/<timestamp>/`。
 
 ## 1. 整体设计架构
 
-当前代码是轻量化的 Python/uv 项目，目标是先完成报告阶段 1 的基础 IO 性能测试。整体逻辑是：
+当前代码是轻量化的 Python/uv 项目，已覆盖报告阶段 1 的基础 IO 性能测试，并新增 COG/GDAL 读取 benchmark 设计。整体逻辑是：
 
 ```text
 配置文件 + 环境变量
@@ -25,10 +25,10 @@ CLI 入口解析运行参数
 加载 benchmark 配置
         |
         v
-创建 S3/MinIO 客户端
+创建 S3/MinIO 或 GDAL/rasterio 访问上下文
         |
         v
-按顺序执行 IO workload
+按顺序执行 IO workload 或 COG workload
         |
         v
 采集每次读写操作样本
@@ -53,10 +53,14 @@ flowchart TD
     G --> H["MinIO on VPS<br/>http://127.0.0.1:9000"]
     F --> I["io_basic.py<br/>execute workloads"]
     I --> G
+    F --> N["gdal_client.py<br/>map S3 settings to GDAL AWS_* env"]
+    N --> O["cog_gdal.py<br/>read COG metadata/full/window data"]
+    O --> H
     I --> J["metrics.py<br/>collect samples and aggregate metrics"]
-    J --> K["results/<timestamp>/<br/>metrics.csv/json, samples.csv/json, run_config.toml"]
+    O --> J
+    J --> K["results/io|cog|mixed/<timestamp>/<br/>metrics.csv/json, samples.csv/json, run_config.toml"]
     K --> L["plotting.py<br/>generate matplotlib PNG charts"]
-    L --> M["results/<timestamp>/plots/"]
+    L --> M["results/io|cog|mixed/<timestamp>/plots/"]
 ```
 
 ## 2. 文件夹与文件职责
@@ -90,6 +94,7 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 - `[s3]`：对象存储连接配置。
 - `[run]`：本次运行的通用配置。
 - `[[workloads]]`：一个或多个测试任务，程序会按文件中的顺序执行。
+- `[[cog_workloads]]`：一个或多个 COG/GDAL 读取测试任务，读取 MinIO 中已有 COG 对象。
 
 文件说明：
 
@@ -119,6 +124,13 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 - 对 16KiB、10MiB、4GiB 分别运行 `seqwrite`、`seqread`、`randomwrite`、`randomread`。
 - 用于需要完整横向对比时显式运行；10GiB 大对象仍只放在 full 配置中，避免矩阵测试流量过大。
 
+`configs/minio-cog-smoke.toml`
+
+- COG/GDAL smoke 配置。
+- 默认读取 `s3://benchmark/cog/sample.tif`，该 COG 需要提前上传到 MinIO。
+- 覆盖 `coginfo`、`fullread`、`randomwindow`、`tilewindow` 四类读取场景。
+- 结果输出到 `results/cog/<timestamp>/`。
+
 ### 2.2 `src/storage_benchmark/`
 
 这里是 benchmark 程序的核心代码。`pyproject.toml` 中将该目录声明为 Python package。
@@ -128,7 +140,7 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 - 命令行入口。
 - 由 `storage-benchmark` 命令调用。
 - 负责串联完整运行流程：解析参数、加载配置、创建客户端、执行 workload、输出结果。
-- 结果输出在配置文件 `[run].output_dir` 指定目录下，默认是 `results/`。
+- 结果输出在配置文件 `[run].output_dir` 指定目录下，并按 benchmark 类型区分为 `io`、`cog`、`mixed` 子目录。
 
 `src/storage_benchmark/config.py`
 
@@ -138,6 +150,7 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
   - `S3Config`
   - `RunConfig`
   - `WorkloadConfig`
+  - `CogWorkloadConfig`
   - `BenchmarkConfig`
   - `S3Settings`
 - 支持环境变量覆盖部分配置。
@@ -159,17 +172,33 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
   - `randomread`
 - 这里是真正执行 MinIO 读写的核心模块。
 
+`src/storage_benchmark/gdal_client.py`
+
+- GDAL/rasterio 访问层。
+- 将当前 `S3Settings` 映射为 GDAL 识别的 `AWS_*` 配置。
+- 构造 `/vsis3/<bucket>/<object_key>` 路径，供 rasterio 读取 MinIO 中的 COG。
+
+`src/storage_benchmark/cog_gdal.py`
+
+- COG/GDAL workload 实现。
+- 包含四类操作：
+  - `coginfo`
+  - `fullread`
+  - `randomwindow`
+  - `tilewindow`
+- 每次读取都会生成 `OperationSample`，并在 `details` 字段记录影像尺寸、block shape、band、窗口坐标等信息。
+
 `src/storage_benchmark/metrics.py`
 
 - 指标采集和汇总模块。
 - 将每次对象读写记录为 `OperationSample`。
 - 将样本聚合为 `MetricRecord`。
-- 写出 `metrics.csv` 和 `metrics.json`。
+- 写出 `metrics.csv`、`metrics.json`、`samples.csv` 和 `samples.json`。
 
 `src/storage_benchmark/plotting.py`
 
 - 结果可视化模块。
-- 从 `results/<timestamp>/metrics.csv` 和 `samples.csv` 读取数据。
+- 从 `results/io|cog|mixed/<timestamp>/metrics.csv` 和 `samples.csv` 读取数据。
 - 使用 matplotlib 生成吞吐、IOPS、延迟摘要和延迟分布图。
 
 `src/storage_benchmark/__init__.py`
@@ -205,7 +234,7 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 `pyproject.toml`
 
 - uv/Python 项目配置。
-- 定义项目依赖：当前运行依赖只有 `boto3`。
+- 定义项目依赖：当前运行依赖包括 `boto3`、`matplotlib`、`rasterio`。
 - 定义开发依赖：`pytest`。
 - 定义命令行入口：
 
@@ -266,7 +295,7 @@ cleanup = false
 字段含义：
 
 - `name`：本次配置名称，仅用于识别。
-- `output_dir`：结果输出根目录。默认输出到 `results/<timestamp>/`。
+- `output_dir`：结果输出根目录。基础 IO 输出到 `results/io/<timestamp>/`，COG/GDAL 输出到 `results/cog/<timestamp>/`，混合配置输出到 `results/mixed/<timestamp>/`。
 - `seed`：随机读选择 key 时使用的随机种子，保证结果可复现。
 - `repeats`：整组 workload 的重复执行次数。smoke/VPS smoke 默认 3 次，full 默认 1 次，避免大对象流量被意外放大。
 - `cleanup`：是否在测试后删除本次产生的对象。当前默认 `false`，便于复查 MinIO 中的对象。
@@ -290,6 +319,27 @@ key_prefix = "benchmark/vps/small"
 - `chunk_size`：生成或读取数据时的分块大小。
 - `key_prefix`：写入 MinIO 时对象 key 的前缀。
 - `source_workload`：读操作的数据来源，必须指向前面某个写 workload。
+
+COG/GDAL workload 示例：
+
+```toml
+[[cog_workloads]]
+name = "cog-random-window"
+operation = "randomwindow"
+object_key = "cog/sample.tif"
+iterations = 50
+window_width = 512
+window_height = 512
+band_indexes = [1]
+```
+
+字段含义：
+
+- `operation`：支持 `coginfo`、`fullread`、`randomwindow`、`tilewindow`。
+- `object_key`：MinIO bucket 中已有 COG 的 key，例如 `cog/sample.tif`。
+- `bucket`：可选；不填时使用 `[s3].bucket`。
+- `window_width` / `window_height`：窗口读取尺寸，`randomwindow` 和 `tilewindow` 必填。
+- `band_indexes`：读取的波段列表，默认 `[1]`。
 
 ### 3.2 环境变量
 
@@ -331,7 +381,7 @@ export S3_SECRET_ACCESS_KEY="minioadmin"
 `build_parser()`
 
 - 使用 `argparse` 定义 CLI。
-- 当前只有一个子命令：`run`。
+- 当前包含两个子命令：`run` 和 `plot`。
 - `--config/-c` 默认值是 `configs/minio-smoke.toml`。
 
 `run(config_path)`
@@ -340,15 +390,22 @@ export S3_SECRET_ACCESS_KEY="minioadmin"
 - 合并配置文件和环境变量，生成 `S3Settings`。
 - 创建 `BotoS3Client`。
 - 使用配置中的 `seed` 创建随机数生成器。
-- 创建输出目录 `results/<timestamp>/`。
-- 调用 `run_workloads(...)` 执行所有测试任务。
+- 根据配置内容创建输出目录：`results/io|cog|mixed/<timestamp>/`。
+- 调用 `run_workloads(...)` 执行基础 IO 测试任务。
+- 调用 `run_cog_workloads(...)` 执行 COG/GDAL 测试任务。
 - 调用 `write_metrics(...)` 写出结果。
 - 复制本次配置文件到结果目录中的 `run_config.toml`。
 
-`_create_output_dir(root)`
+`_benchmark_kind(config)`
+
+- 如果只有 `[[workloads]]`，返回 `io`。
+- 如果只有 `[[cog_workloads]]`，返回 `cog`。
+- 如果两者都有，返回 `mixed`。
+
+`_create_output_dir(root, benchmark_kind)`
 
 - 用 UTC 时间生成唯一结果目录。
-- 示例：`results/20260518T162700Z/`。
+- 示例：`results/cog/20260518T162700Z/`。
 
 `_print_records(records)`
 
@@ -366,10 +423,14 @@ flowchart TD
     F --> G["load_config()"]
     G --> H["S3Settings.from_config_and_env()"]
     H --> I["BotoS3Client(settings)"]
-    I --> J["_create_output_dir(results)"]
-    J --> K["run_workloads()"]
-    K --> L["write_metrics()"]
-    L --> M["copy run_config.toml"]
+    I --> J["_create_output_dir(results, kind)"]
+    J --> K{"configured workloads"}
+    K -- "IO" --> L["run_workloads()"]
+    K -- "COG" --> O["run_cog_workloads()"]
+    L --> P["OperationSample"]
+    O --> P
+    P --> Q["write_metrics()"]
+    Q --> M["copy run_config.toml"]
     M --> N["_print_records()"]
 ```
 
@@ -378,9 +439,11 @@ flowchart TD
 核心数据结构：
 
 - `Operation`：操作类型枚举。
+- `CogOperation`：COG/GDAL 操作类型枚举。
 - `S3Config`：TOML 中 `[s3]` 的配置。
 - `RunConfig`：TOML 中 `[run]` 的配置。
 - `WorkloadConfig`：每个 `[[workloads]]` 的配置。
+- `CogWorkloadConfig`：每个 `[[cog_workloads]]` 的配置。
 - `BenchmarkConfig`：完整配置对象。
 - `S3Settings`：最终用于创建 S3 client 的配置，包含密钥。
 
@@ -389,7 +452,7 @@ flowchart TD
 `load_config(path)`
 
 - 读取 TOML 文件。
-- 分别解析 `[s3]`、`[run]`、`[[workloads]]`。
+- 分别解析 `[s3]`、`[run]`、`[[workloads]]`、`[[cog_workloads]]`。
 - 调用 `_validate_config(...)` 做基础校验。
 
 `S3Settings.from_config_and_env(config)`
@@ -409,11 +472,13 @@ flowchart TD
 
 `_validate_config(config)`
 
-- 确认至少有一个 workload。
+- 确认至少有一个基础 IO workload 或 COG workload。
 - 确认 workload 名称唯一。
 - 确认对象大小、执行次数、chunk size 都大于 0。
 - 确认 `seqread` 和 `randomread` 必须配置 `source_workload`。
 - 确认 `source_workload` 指向已存在的 workload。
+- 确认 COG workload 有 `object_key`、正数 iterations、正数 band indexes。
+- 确认窗口读取类 COG workload 配置了正数 `window_width` 和 `window_height`。
 
 ### 3.5 `s3_client.py` 核心逻辑
 
@@ -518,14 +583,50 @@ flowchart TD
     B --> J["return samples, produced_keys"]
 ```
 
-### 3.7 `metrics.py` 核心逻辑
+### 3.7 `gdal_client.py` 与 `cog_gdal.py` 核心逻辑
+
+`gdal_client.py`
+
+- `rasterio_env_kwargs(settings)`：把项目内部的 `S3Settings` 转换成 GDAL/rasterio 识别的 `AWS_*` 参数。
+- `vsi_s3_path(bucket, object_key)`：生成 `/vsis3/<bucket>/<object_key>` 路径。
+- `open_raster(settings, bucket, object_key)`：在 `rasterio.Env(...)` 上下文内打开远程 COG。
+
+这些 `AWS_*` 参数是 GDAL S3 驱动的通用命名，不代表只能连接 AWS；MinIO 和 Ceph RGW 也复用同一套 S3 兼容参数。
+
+`cog_gdal.py`
+
+- `run_cog_workloads(...)`：按配置顺序执行所有 COG workload。
+- `coginfo(...)`：打开 COG 并读取元数据，统计打开和元数据读取耗时。
+- `fullread(...)`：读取指定波段的全图数据，统计读取耗时和数组字节数。
+- `randomwindow(...)`：按随机窗口读取 COG，用于观察远程 COG 分块读取延迟。
+- `tilewindow(...)`：按固定网格窗口读取 COG，用于模拟瓦片式访问。
+
+COG/GDAL 执行流程：
+
+```mermaid
+flowchart TD
+    A["run_cog_workloads()"] --> B["for cog_workload in config order"]
+    B --> C{"operation"}
+    C -- "coginfo" --> D["open COG and read metadata"]
+    C -- "fullread" --> E["dataset.read(bands)"]
+    C -- "randomwindow" --> F["random window -> dataset.read(window)"]
+    C -- "tilewindow" --> G["tile grid window -> dataset.read(window)"]
+    D --> H["OperationSample with details"]
+    E --> H
+    F --> H
+    G --> H
+    H --> I["metrics.py"]
+```
+
+### 3.8 `metrics.py` 核心逻辑
 
 核心数据结构：
 
 `OperationSample`
 
 - 表示单次对象操作。
-- 字段包括 workload、operation、object_key、bytes_count、duration_seconds、started_at。
+- 字段包括 workload、operation、object_key、bytes_count、duration_seconds、started_at、repeat_index、details。
+- 基础 IO 样本的 `details` 通常为空；COG/GDAL 样本会记录影像元数据和窗口坐标。
 
 `MetricRecord`
 
@@ -609,7 +710,7 @@ uv run storage-benchmark run --config configs/minio-vps-smoke.toml
 结果输出位置：
 
 ```text
-<repo-root>/results/<timestamp>/
+<repo-root>/results/io/<timestamp>/
 ```
 
 输出文件：
@@ -625,13 +726,13 @@ run_config.toml
 生成图表：
 
 ```bash
-uv run storage-benchmark plot --result-dir results/<timestamp>
+uv run storage-benchmark plot --result-dir results/io/<timestamp>
 ```
 
 输出位置：
 
 ```text
-<repo-root>/results/<timestamp>/plots/
+<repo-root>/results/io/<timestamp>/plots/
 ```
 
 ### 4.3 完整测试
@@ -651,6 +752,34 @@ uv run storage-benchmark run --config configs/minio-matrix.toml
 注意：matrix 配置会让 small、medium、large 都覆盖随机读写和顺序读写，适合做完整横向对比，不建议作为日常快速验证。
 
 ### 4.5 本地单元测试
+
+### 4.5 COG/GDAL 测试
+
+先确认 MinIO 中已有 COG 对象。默认配置读取：
+
+```text
+s3://benchmark/cog/sample.tif
+```
+
+运行：
+
+```bash
+uv run storage-benchmark run --config configs/minio-cog-smoke.toml
+```
+
+结果输出位置：
+
+```text
+<repo-root>/results/cog/<timestamp>/
+```
+
+如果一个配置文件同时包含 `[[workloads]]` 和 `[[cog_workloads]]`，结果会输出到：
+
+```text
+<repo-root>/results/mixed/<timestamp>/
+```
+
+### 4.6 本地单元测试
 
 ```bash
 uv run pytest
@@ -677,15 +806,16 @@ uv run pytest
 - 计算吞吐量、平均延迟、P95/P99 延迟、IOPS。
 - 使用 mock S3 client 做单元测试，不依赖真实 MinIO。
 - 后续通过替换 endpoint 连接 Ceph RGW。
+- 使用 rasterio/GDAL 读取 MinIO 中已有 COG 对象。
+- 执行 COG 元数据读取、全图读取、随机窗口读取和固定瓦片窗口读取。
+- 用 `details` 字段记录 COG 影像元数据和窗口坐标，便于后续分析。
 
 当前版本暂不支持：
 
-- GeoTIFF/COG 分块读取。
-- GDAL `read window` 场景。
 - 并发 worker 压测。
 - 自动创建 bucket。
 - 自动部署 MinIO。
-- 自动绘制性能曲线。
+- 自动生成、上传或转换 COG。
 - 跨多台 VPS 的分布式压测。
 - MinIO/Ceph 自动对比报告。
 
@@ -696,5 +826,5 @@ uv run pytest
 1. 增加 `--dry-run`，运行前打印将执行的 workload 和 S3 endpoint，避免误跑 full 配置。
 2. 增加 bucket 连通性检查，例如启动时执行一次 `list_objects_v2` 或 head bucket。
 3. 增加并发参数，例如 `workers = 4`，测试并发读写性能。
-4. 增加结果分析脚本，将 `metrics.csv` 转换为图表。
-5. 增加 GeoTIFF/COG 专项模块，测试 tile/window 读取性能。
+4. 增加 COG 样本准备脚本，例如校验 COG 是否存在、是否可被 GDAL 远程打开。
+5. 增加并发 COG window read，测试多 worker 下的远程 COG 读取能力。
