@@ -15,6 +15,13 @@ class Operation(StrEnum):
     RANDOMREAD = "randomread"
 
 
+class CogOperation(StrEnum):
+    COGINFO = "coginfo"
+    FULLREAD = "fullread"
+    RANDOMWINDOW = "randomwindow"
+    TILEWINDOW = "tilewindow"
+
+
 @dataclass(frozen=True)
 class S3Config:
     endpoint_url: str = "http://127.0.0.1:9000"
@@ -44,10 +51,24 @@ class WorkloadConfig:
 
 
 @dataclass(frozen=True)
+class CogWorkloadConfig:
+    name: str
+    operation: CogOperation
+    object_key: str
+    bucket: str | None = None
+    iterations: int = 1
+    window_width: int | None = None
+    window_height: int | None = None
+    band_indexes: list[int] = field(default_factory=lambda: [1])
+    overview_level: int | None = None
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     s3: S3Config = field(default_factory=S3Config)
     run: RunConfig = field(default_factory=RunConfig)
     workloads: list[WorkloadConfig] = field(default_factory=list)
+    cog_workloads: list[CogWorkloadConfig] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -95,7 +116,8 @@ def load_config(path: Path) -> BenchmarkConfig:
     s3 = _load_s3_config(raw.get("s3", {}))
     run = _load_run_config(raw.get("run", {}))
     workloads = [_load_workload_config(item) for item in raw.get("workloads", [])]
-    config = BenchmarkConfig(s3=s3, run=run, workloads=workloads)
+    cog_workloads = [_load_cog_workload_config(item) for item in raw.get("cog_workloads", [])]
+    config = BenchmarkConfig(s3=s3, run=run, workloads=workloads, cog_workloads=cog_workloads)
     _validate_config(config)
     return config
 
@@ -120,6 +142,7 @@ def _load_run_config(raw: dict[str, Any]) -> RunConfig:
 
 
 def _load_workload_config(raw: dict[str, Any]) -> WorkloadConfig:
+    _require_keys(raw, "name", "operation", "object_size")
     operation = Operation(str(raw["operation"]))
     return WorkloadConfig(
         name=str(raw["name"]),
@@ -132,9 +155,31 @@ def _load_workload_config(raw: dict[str, Any]) -> WorkloadConfig:
     )
 
 
+def _load_cog_workload_config(raw: dict[str, Any]) -> CogWorkloadConfig:
+    _require_keys(raw, "name", "operation", "object_key")
+    operation = CogOperation(str(raw["operation"]))
+    return CogWorkloadConfig(
+        name=str(raw["name"]),
+        operation=operation,
+        object_key=str(raw["object_key"]).strip("/"),
+        bucket=str(raw["bucket"]) if raw.get("bucket") else None,
+        iterations=int(raw.get("iterations", 1)),
+        window_width=parse_size(raw["window_width"]) if "window_width" in raw else None,
+        window_height=parse_size(raw["window_height"]) if "window_height" in raw else None,
+        band_indexes=[int(index) for index in raw.get("band_indexes", [1])],
+        overview_level=int(raw["overview_level"]) if "overview_level" in raw else None,
+    )
+
+
+def _require_keys(raw: dict[str, Any], *keys: str) -> None:
+    missing = [key for key in keys if key not in raw]
+    if missing:
+        raise ValueError(f"missing required config field(s): {', '.join(missing)}")
+
+
 def _validate_config(config: BenchmarkConfig) -> None:
-    if not config.workloads:
-        raise ValueError("at least one workload is required")
+    if not config.workloads and not config.cog_workloads:
+        raise ValueError("at least one workload or cog_workload is required")
     if config.run.repeats <= 0:
         raise ValueError("run repeats must be positive")
 
@@ -161,6 +206,36 @@ def _validate_config(config: BenchmarkConfig) -> None:
                 f"workload {workload.name} references unknown source_workload "
                 f"{workload.source_workload}"
             )
+
+    cog_names: set[str] = set()
+    for workload in config.cog_workloads:
+        if not workload.name:
+            raise ValueError("cog workload name is required")
+        if workload.name in cog_names:
+            raise ValueError(f"duplicate cog workload name: {workload.name}")
+        if not workload.object_key:
+            raise ValueError(f"cog workload {workload.name} object_key is required")
+        if workload.iterations <= 0:
+            raise ValueError(f"cog workload {workload.name} iterations must be positive")
+        if not workload.band_indexes:
+            raise ValueError(f"cog workload {workload.name} band_indexes is required")
+        if any(index <= 0 for index in workload.band_indexes):
+            raise ValueError(f"cog workload {workload.name} band indexes must be positive")
+        if workload.overview_level is not None and workload.overview_level < 0:
+            raise ValueError(f"cog workload {workload.name} overview_level must be non-negative")
+
+        is_window_read = workload.operation in {
+            CogOperation.RANDOMWINDOW,
+            CogOperation.TILEWINDOW,
+        }
+        if is_window_read:
+            if workload.window_width is None or workload.window_height is None:
+                raise ValueError(
+                    f"cog workload {workload.name} requires window_width and window_height"
+                )
+            if workload.window_width <= 0 or workload.window_height <= 0:
+                raise ValueError(f"cog workload {workload.name} window size must be positive")
+        cog_names.add(workload.name)
 
 
 def parse_bool(value: Any) -> bool:

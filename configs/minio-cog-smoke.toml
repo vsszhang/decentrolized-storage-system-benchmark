@@ -1,0 +1,43 @@
+[s3]
+endpoint_url = "http://127.0.0.1:9000"
+bucket = "benchmark"
+region = "us-east-1"
+use_ssl = false
+
+[run]
+name = "minio-cog-smoke"
+output_dir = "results"
+seed = 42
+repeats = 3
+cleanup = false
+
+[[cog_workloads]]
+name = "cog-info"
+operation = "coginfo"
+object_key = "cog/sample.tif"
+iterations = 1
+
+[[cog_workloads]]
+name = "cog-full-read"
+operation = "fullread"
+object_key = "cog/sample.tif"
+iterations = 1
+band_indexes = [1]
+
+[[cog_workloads]]
+name = "cog-random-window"
+operation = "randomwindow"
+object_key = "cog/sample.tif"
+iterations = 50
+window_width = 512
+window_height = 512
+band_indexes = [1]
+
+[[cog_workloads]]
+name = "cog-tile-window"
+operation = "tilewindow"
+object_key = "cog/sample.tif"
+iterations = 50
+window_width = 512
+window_height = 512
+band_indexes = [1]

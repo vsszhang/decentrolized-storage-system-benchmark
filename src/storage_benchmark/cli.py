@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from storage_benchmark.config import S3Settings, WorkloadConfig, load_config
+from storage_benchmark.cog_gdal import run_cog_workloads
 from storage_benchmark.io_basic import cleanup_keys, run_workloads
 from storage_benchmark.metrics import MetricRecord, write_metrics
 from storage_benchmark.plotting import generate_plots
@@ -67,25 +68,38 @@ def run(config_path: Path) -> int:
 
     client = BotoS3Client(settings)
     rng = random.Random(benchmark_config.run.seed)
-    output_dir = _create_output_dir(benchmark_config.run.output_dir)
+    output_dir = _create_output_dir(
+        benchmark_config.run.output_dir,
+        _benchmark_kind(benchmark_config),
+    )
 
     try:
         samples = []
         keys_by_workload = {}
         for repeat_index in range(1, benchmark_config.run.repeats + 1):
-            repeat_workloads = _workloads_for_repeat(
-                benchmark_config.workloads,
-                repeat_index,
-                benchmark_config.run.repeats,
-            )
-            repeat_samples, repeat_keys = run_workloads(
-                repeat_workloads,
-                client,
-                rng,
-                repeat_index=repeat_index,
-            )
-            samples.extend(repeat_samples)
-            _merge_keys(keys_by_workload, repeat_keys)
+            if benchmark_config.workloads:
+                repeat_workloads = _workloads_for_repeat(
+                    benchmark_config.workloads,
+                    repeat_index,
+                    benchmark_config.run.repeats,
+                )
+                repeat_samples, repeat_keys = run_workloads(
+                    repeat_workloads,
+                    client,
+                    rng,
+                    repeat_index=repeat_index,
+                )
+                samples.extend(repeat_samples)
+                _merge_keys(keys_by_workload, repeat_keys)
+            if benchmark_config.cog_workloads:
+                samples.extend(
+                    run_cog_workloads(
+                        benchmark_config.cog_workloads,
+                        settings,
+                        rng,
+                        repeat_index=repeat_index,
+                    )
+                )
         records = write_metrics(output_dir, samples)
         shutil.copyfile(config_path, output_dir / "run_config.toml")
         if benchmark_config.run.cleanup:
@@ -136,12 +150,23 @@ def _merge_keys(
         keys_by_workload.setdefault(workload_name, []).extend(keys)
 
 
-def _create_output_dir(root: Path) -> Path:
+def _benchmark_kind(benchmark_config) -> str:
+    has_io = bool(benchmark_config.workloads)
+    has_cog = bool(benchmark_config.cog_workloads)
+    if has_io and has_cog:
+        return "mixed"
+    if has_cog:
+        return "cog"
+    return "io"
+
+
+def _create_output_dir(root: Path, benchmark_kind: str) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    output_dir = root / timestamp
+    output_root = root / benchmark_kind
+    output_dir = output_root / timestamp
     counter = 1
     while output_dir.exists():
-        output_dir = root / f"{timestamp}-{counter}"
+        output_dir = output_root / f"{timestamp}-{counter}"
         counter += 1
     output_dir.mkdir(parents=True)
     return output_dir

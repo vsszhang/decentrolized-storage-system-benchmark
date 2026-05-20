@@ -15,6 +15,7 @@ class OperationSample:
     duration_seconds: float
     started_at: str
     repeat_index: int = 1
+    details: str = ""
 
 
 @dataclass(frozen=True)
