@@ -120,6 +120,31 @@ For COG/GDAL result directories, the same command also writes:
 - `<result-dir>/plots/cog_latency_over_time_ms.png`
 - `<result-dir>/plots/cog_window_latency_scatter_ms.png`
 
+## Compare Multiple Runs
+
+After running the same profile multiple times, generate a cross-run comparison
+report from existing result directories:
+
+```bash
+uv run storage-benchmark compare \
+  --result-dir results/cog/20260520T100000Z \
+  --result-dir results/cog/20260520T110000Z
+```
+
+Or select the latest valid result directories under a result root:
+
+```bash
+uv run storage-benchmark compare --result-root results/cog --latest 5
+```
+
+By default this writes a report under `reports/<type>-compare-<timestamp>/`
+with:
+
+- `combined_metrics.csv`
+- `combined_samples.csv`
+- `summary.md`
+- cross-run throughput, IOPS, latency, and COG-specific PNG charts
+
 ## Tests
 
 ```bash

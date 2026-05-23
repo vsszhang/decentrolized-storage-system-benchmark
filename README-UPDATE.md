@@ -381,7 +381,7 @@ export S3_SECRET_ACCESS_KEY="minioadmin"
 `build_parser()`
 
 - 使用 `argparse` 定义 CLI。
-- 当前包含两个子命令：`run` 和 `plot`。
+- 当前包含三个子命令：`run`、`plot` 和 `compare`。
 - `--config/-c` 默认值是 `configs/minio-smoke.toml`。
 
 `run(config_path)`
@@ -664,6 +664,20 @@ flowchart TD
   - `cog_latency_over_time_ms.png`
   - `cog_window_latency_scatter_ms.png`
 
+`generate_compare_report(result_dirs, output_dir)`
+
+- 读取多个 `results/<type>/<timestamp>/` 目录。
+- 每个输入目录必须包含 `metrics.csv`、`samples.csv`、`run_config.toml`。
+- 输出到 `reports/<type>-compare-<timestamp>/`，混合输入输出到 `reports/mixed-compare-<timestamp>/`。
+- 写出 `combined_metrics.csv`、`combined_samples.csv`、`summary.md`。
+- 生成多 run 对比图：
+  - `metric_trends_by_run.png`
+  - `latency_boxplot_by_run.png`
+  - `throughput_by_run.png`
+  - `iops_by_run.png`
+  - `cog_window_latency_by_run.png`
+  - `cog_operation_latency_by_run.png`
+
 指标计算公式：
 
 ```text
@@ -756,8 +770,6 @@ uv run storage-benchmark run --config configs/minio-matrix.toml
 
 注意：matrix 配置会让 small、medium、large 都覆盖随机读写和顺序读写，适合做完整横向对比，不建议作为日常快速验证。
 
-### 4.5 本地单元测试
-
 ### 4.5 COG/GDAL 测试
 
 先确认 MinIO 中已有 COG 对象。默认配置读取：
@@ -784,7 +796,43 @@ uv run storage-benchmark run --config configs/minio-cog-smoke.toml
 <repo-root>/results/mixed/<timestamp>/
 ```
 
-### 4.6 本地单元测试
+### 4.6 多次 Run 对比报告
+
+显式指定多个结果目录：
+
+```bash
+uv run storage-benchmark compare \
+  --result-dir results/cog/20260520T100000Z \
+  --result-dir results/cog/20260520T110000Z
+```
+
+从某个类型目录中自动选取最近 N 次有效结果：
+
+```bash
+uv run storage-benchmark compare --result-root results/cog --latest 5
+```
+
+结果输出位置：
+
+```text
+<repo-root>/reports/cog-compare-<timestamp>/
+```
+
+输出文件：
+
+```text
+combined_metrics.csv
+combined_samples.csv
+summary.md
+metric_trends_by_run.png
+latency_boxplot_by_run.png
+throughput_by_run.png
+iops_by_run.png
+cog_window_latency_by_run.png
+cog_operation_latency_by_run.png
+```
+
+### 4.7 本地单元测试
 
 ```bash
 uv run pytest
@@ -814,6 +862,7 @@ uv run pytest
 - 使用 rasterio/GDAL 读取 MinIO 中已有 COG 对象。
 - 执行 COG 元数据读取、全图读取、随机窗口读取和固定瓦片窗口读取。
 - 用 `details` 字段记录 COG 影像元数据和窗口坐标，便于后续分析。
+- 聚合多个已有 run，生成 combined CSV、summary 和多 run 对比图表。
 
 当前版本暂不支持：
 
