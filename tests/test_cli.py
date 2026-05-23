@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from storage_benchmark import cli
 from storage_benchmark.cli import _benchmark_kind, _create_output_dir, _workloads_for_repeat
 from storage_benchmark.config import (
     BenchmarkConfig,
@@ -61,3 +64,58 @@ def test_create_output_dir_uses_benchmark_kind_subdirectory(tmp_path) -> None:
 
     assert output_dir.parent == tmp_path / "cog"
     assert output_dir.exists()
+
+
+def test_compare_cli_accepts_explicit_result_dirs(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_generate_compare_report(result_dirs, output_dir=None):
+        captured["result_dirs"] = result_dirs
+        captured["output_dir"] = output_dir
+        return [tmp_path / "summary.md"]
+
+    monkeypatch.setattr(cli, "generate_compare_report", fake_generate_compare_report)
+
+    exit_code = cli.main(
+        [
+            "compare",
+            "--result-dir",
+            "results/cog/a",
+            "--result-dir",
+            "results/cog/b",
+            "--output-dir",
+            str(tmp_path / "report"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["result_dirs"] == [Path("results/cog/a"), Path("results/cog/b")]
+    assert captured["output_dir"] == tmp_path / "report"
+
+
+def test_compare_cli_accepts_result_root_and_latest(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_find_latest_result_dirs(result_root, latest):
+        captured["result_root"] = result_root
+        captured["latest"] = latest
+        return [Path("results/cog/a"), Path("results/cog/b"), Path("results/cog/c")]
+
+    def fake_generate_compare_report(result_dirs, output_dir=None):
+        captured["result_dirs"] = result_dirs
+        captured["output_dir"] = output_dir
+        return [tmp_path / "summary.md"]
+
+    monkeypatch.setattr(cli, "find_latest_result_dirs", fake_find_latest_result_dirs)
+    monkeypatch.setattr(cli, "generate_compare_report", fake_generate_compare_report)
+
+    exit_code = cli.main(["compare", "--result-root", "results/cog", "--latest", "3"])
+
+    assert exit_code == 0
+    assert captured["result_root"] == Path("results/cog")
+    assert captured["latest"] == 3
+    assert captured["result_dirs"] == [
+        Path("results/cog/a"),
+        Path("results/cog/b"),
+        Path("results/cog/c"),
+    ]
