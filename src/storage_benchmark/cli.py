@@ -13,6 +13,7 @@ from storage_benchmark.cog_gdal import run_cog_workloads
 from storage_benchmark.io_basic import cleanup_keys, run_workloads
 from storage_benchmark.metrics import MetricRecord, write_metrics
 from storage_benchmark.plotting import generate_plots
+from storage_benchmark.reporting import find_latest_result_dirs, generate_compare_report
 from storage_benchmark.s3_client import BotoS3Client
 
 
@@ -23,6 +24,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run(args.config)
     if args.command == "plot":
         return plot(args.result_dir, args.output_dir)
+    if args.command == "compare":
+        return compare(args.result_dirs, args.result_root, args.latest, args.output_dir)
     parser.print_help()
     return 1
 
@@ -54,6 +57,36 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="plot output directory, defaults to <result-dir>/plots",
+    )
+
+    compare_parser = subparsers.add_parser("compare", help="compare multiple benchmark result directories")
+    compare_parser.add_argument(
+        "--result-dir",
+        "-r",
+        type=Path,
+        action="append",
+        dest="result_dirs",
+        default=[],
+        help="result directory containing metrics.csv, samples.csv, and run_config.toml; repeatable",
+    )
+    compare_parser.add_argument(
+        "--result-root",
+        type=Path,
+        default=None,
+        help="root directory such as results/cog; latest valid result directories will be selected",
+    )
+    compare_parser.add_argument(
+        "--latest",
+        type=int,
+        default=5,
+        help="number of latest valid result directories to select from --result-root",
+    )
+    compare_parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=Path,
+        default=None,
+        help="report output directory, defaults to reports/<type>-compare-<timestamp>",
     )
     return parser
 
@@ -122,6 +155,29 @@ def plot(result_dir: Path, output_dir: Path | None = None) -> int:
         return 1
 
     print("Generated plots:")
+    for path in paths:
+        print(f"- {path}")
+    return 0
+
+
+def compare(
+    result_dirs: list[Path],
+    result_root: Path | None,
+    latest: int,
+    output_dir: Path | None = None,
+) -> int:
+    try:
+        selected_dirs = list(result_dirs)
+        if result_root is not None:
+            selected_dirs.extend(find_latest_result_dirs(result_root, latest))
+        if not selected_dirs:
+            raise ValueError("provide at least two --result-dir values or --result-root")
+        paths = generate_compare_report(selected_dirs, output_dir)
+    except Exception as exc:
+        print(f"Compare report generation failed: {exc}")
+        return 1
+
+    print("Generated compare report:")
     for path in paths:
         print(f"- {path}")
     return 0
