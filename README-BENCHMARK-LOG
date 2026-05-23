@@ -1,0 +1,263 @@
+# Benchmark Coverage Log
+
+本文件用于手动记录 benchmark 能力覆盖范围。只有在明确要求更新本文件时才维护，普通代码、配置、测试或文档变更不自动更新本文件。
+
+## 2026-05-22 16:09:23 MSK - MinIO 基础 IO 与 COG/GDAL Benchmark 覆盖记录
+
+### 当前测试运行背景
+
+- 代码在本地开发，通过 git repo 同步到实验室 VPS。
+- MinIO 运行在 VPS 本机，或通过 VPN/SSH 跳板映射到 VPS 的 `127.0.0.1:9000`。
+- benchmark 程序在 VPS 仓库目录中运行，通过 S3-compatible API 或 GDAL `/vsis3/` 访问 MinIO。
+- 敏感信息不写入配置文件，通过环境变量注入：
+  - `S3_ACCESS_KEY_ID`
+  - `S3_SECRET_ACCESS_KEY`
+- 默认 bucket 为 `benchmark`，可通过配置文件或 `S3_BUCKET` 覆盖。
+
+### 已覆盖测试范围
+
+#### 1. MinIO 基础 IO Benchmark
+
+已覆盖的操作类型：
+
+- `seqwrite`：顺序写入对象。
+- `seqread`：顺序读取已写入对象。
+- `randomwrite`：写入多个随机 key 对象，主要用于小对象/中对象 IOPS 场景。
+- `randomread`：从前置写 workload 产生的对象集合中随机选 key 读取。
+
+已覆盖的对象规模：
+
+- 小对象：`16KiB`。
+- 中等对象：`10MiB`。
+- 大对象：`4GiB`。
+- 报告规模大对象：`10GiB`，仅在 full 配置中显式运行。
+
+已覆盖的配置 profile：
+
+- `configs/minio-smoke.toml`
+  - 快速连通性验证。
+  - 包含小对象随机读写和中等对象顺序读写。
+  - 默认 `repeats = 3`。
+- `configs/minio-vps-smoke.toml`
+  - 面向实验室 VPS 的 smoke 配置。
+  - 默认 endpoint 为 `http://127.0.0.1:9000`。
+  - 默认 `repeats = 3`。
+- `configs/minio-full.toml`
+  - 实际 benchmark 组合。
+  - 包含 `16KiB`、`10MiB`、`4GiB`、`10GiB`。
+  - 默认 `repeats = 1`，避免误触发大流量重复测试。
+- `configs/minio-matrix.toml`
+  - 完整矩阵测试。
+  - 对 `16KiB`、`10MiB`、`4GiB` 分别覆盖顺序写、顺序读、随机写、随机读。
+  - 不包含 `10GiB` 矩阵组合，避免测试流量过大。
+
+基础 IO 输出路径：
+
+```text
+results/io/<timestamp>/
+```
+
+#### 2. COG/GDAL Benchmark
+
+已覆盖的 COG 操作类型：
+
+- `coginfo`
+  - 通过 GDAL/rasterio 打开 MinIO 中已有 COG。
+  - 读取影像元数据，例如尺寸、波段数、CRS、block shape。
+- `fullread`
+  - 读取指定 band 的整幅 COG。
+  - 统计读取耗时和返回数组字节数。
+- `randomwindow`
+  - 随机生成窗口并执行 GDAL window read。
+  - 默认 smoke 配置使用 `512 x 512` 窗口。
+- `tilewindow`
+  - 按固定网格窗口顺序读取。
+  - 默认 smoke 配置使用 `512 x 512` 窗口。
+
+已覆盖的 COG 访问方式：
+
+- 使用 `rasterio` 调用 GDAL。
+- 使用 `/vsis3/<bucket>/<object_key>` 读取 MinIO 中的 COG。
+- MinIO access key、secret key 通过 `rasterio.session.AWSSession` 传递。
+- GDAL 环境选项保留：
+  - `AWS_HTTPS`
+  - `AWS_VIRTUAL_HOSTING=FALSE`
+
+已覆盖的 COG 配置 profile：
+
+- `configs/minio-cog-smoke.toml`
+  - 默认读取 `s3://benchmark/cog/sample.tif`。
+  - COG 文件需要由用户提前上传到 MinIO。
+  - 默认覆盖 `coginfo`、`fullread`、`randomwindow`、`tilewindow`。
+  - 默认 `repeats = 3`。
+
+COG/GDAL 输出路径：
+
+```text
+results/cog/<timestamp>/
+```
+
+混合 IO + COG 配置输出路径：
+
+```text
+results/mixed/<timestamp>/
+```
+
+#### 3. 指标与原始样本输出
+
+每次 benchmark 成功运行后输出：
+
+```text
+metrics.csv
+metrics.json
+samples.csv
+samples.json
+run_config.toml
+```
+
+已覆盖的聚合指标：
+
+- 操作次数：`operations`
+- 总字节数：`bytes_total`
+- 总耗时：`duration_seconds`
+- 吞吐量：`throughput_mb_s`
+- 平均延迟：`avg_latency_ms`
+- P95 延迟：`p95_latency_ms`
+- P99 延迟：`p99_latency_ms`
+- IOPS：`iops`
+
+已覆盖的 raw sample 字段：
+
+- `workload`
+- `operation`
+- `object_key`
+- `bytes_count`
+- `duration_seconds`
+- `started_at`
+- `repeat_index`
+- `details`
+
+其中：
+
+- 基础 IO 样本的 `details` 通常为空。
+- COG/GDAL 样本的 `details` 记录 bucket、object key、band indexes、影像尺寸、block shape、窗口坐标等信息。
+
+#### 4. 绘图输出
+
+通用 plot 已覆盖：
+
+- `throughput_mb_s.png`
+- `iops.png`
+- `latency_summary_ms.png`
+- `latency_distribution_ms.png`
+
+COG/GDAL 专用 plot 已覆盖：
+
+- `cog_latency_by_operation_ms.png`
+- `cog_read_size_mb.png`
+- `cog_latency_over_time_ms.png`
+- `cog_window_latency_scatter_ms.png`
+
+绘图命令：
+
+```bash
+uv run storage-benchmark plot --result-dir results/<io|cog|mixed>/<timestamp>
+```
+
+### 已覆盖的测试验证
+
+当前单元测试不依赖真实 MinIO，主要覆盖代码逻辑：
+
+- 配置解析与校验。
+- S3 环境变量覆盖。
+- 基础 IO workload 的 S3 client 调用。
+- deterministic stream 的 `seek/tell/read` 行为。
+- repeat index 传播。
+- metrics 聚合计算。
+- raw samples 输出。
+- GDAL/rasterio 环境参数映射。
+- COG workload 的 fake rasterio dataset 调用。
+- 通用 plot 与 COG 专用 plot 生成。
+
+当前本地验证命令：
+
+```bash
+uv run pytest
+```
+
+最近一次验证结果：
+
+```text
+24 passed
+```
+
+### 当前未覆盖测试范围
+
+#### 1. 并发与压力测试
+
+当前未覆盖：
+
+- 多 worker 并发读写。
+- 多进程/多线程并发 COG window read。
+- 高并发下 MinIO 连接池行为。
+- 持续长时间 soak test。
+
+#### 2. 更细粒度 COG/GDAL 因子
+
+当前未覆盖：
+
+- overview 指定层级读取。
+- 不同 COG block size 的对比。
+- 不同压缩方式的对比，例如 DEFLATE、LZW、ZSTD。
+- 多 band 同时读取与单 band 读取对比。
+- GDAL cache size 对 window read 的影响。
+- GDAL HTTP range request 级别统计。
+- COG 是否符合规范的自动校验。
+
+#### 3. 数据准备与生命周期
+
+当前未覆盖：
+
+- 自动生成 COG。
+- 自动从 GeoTIFF 转换 COG。
+- 自动上传 COG 到 MinIO。
+- 自动创建 bucket。
+- benchmark 后按 run id 清理 COG 输入数据。
+
+#### 4. 存储系统对比
+
+当前未覆盖：
+
+- MinIO vs Ceph RGW 自动对比。
+- 多 endpoint 批量运行。
+- 跨多台 VPS 的分布式测试。
+- 网络链路差异分析。
+- 磁盘、CPU、内存、MinIO 服务端指标采集。
+
+#### 5. 结果分析与报告
+
+当前未覆盖：
+
+- 自动生成 Markdown/HTML benchmark 报告。
+- 多次 run 的趋势对比。
+- 多 profile 结果合并。
+- 异常值识别。
+- 置信区间统计。
+- 结果上传或归档。
+
+### 当前能力边界
+
+- 当前 benchmark 主要用于验证 MinIO 上的对象读写性能与 COG/GDAL 远程读取性能。
+- 当前基础 IO 的 `randomread/randomwrite` 是随机 key 级别，不是对象内部随机 offset 读写。
+- 当前 COG 的 `randomwindow/tilewindow` 是 GDAL window read 级别，适合观察 COG 远程分块读取性能。
+- 当前程序只读取已存在的 COG，不负责判断输入文件是否真的是规范 COG。
+- 当前 plot 使用 `metrics.csv` 和 `samples.csv`，不依赖 pandas。
+- 当前单元测试使用 mock/fake client，不代表真实 MinIO 或真实 GDAL 网络路径性能。
+
+### 推荐下一步覆盖
+
+1. 增加 COG 输入校验命令，例如检查对象是否存在、能否被 GDAL 打开、是否包含 overview。
+2. 增加 COG overview 读取配置，覆盖不同分辨率层级的 window read。
+3. 增加并发参数，例如 `workers = 4/8/16`，分别覆盖基础 IO 与 COG window read。
+4. 增加服务端指标采集脚本，例如 MinIO 容器 CPU、内存、磁盘 IO、网络 IO。
+5. 增加多次 run 对比报告，将多个 `results/<type>/<timestamp>/` 聚合成一份图表报告。
