@@ -122,6 +122,63 @@ def load_config(path: Path) -> BenchmarkConfig:
     return config
 
 
+def write_config(path: Path, config: BenchmarkConfig) -> None:
+    lines = [
+        "[s3]",
+        f"endpoint_url = {_toml_value(config.s3.endpoint_url)}",
+        f"bucket = {_toml_value(config.s3.bucket)}" if config.s3.bucket is not None else "bucket = \"\"",
+        f"region = {_toml_value(config.s3.region)}",
+        f"use_ssl = {_toml_value(config.s3.use_ssl)}",
+        "",
+        "[run]",
+        f"name = {_toml_value(config.run.name)}",
+        f"output_dir = {_toml_value(str(config.run.output_dir))}",
+        f"seed = {config.run.seed}",
+        f"repeats = {config.run.repeats}",
+        f"cleanup = {_toml_value(config.run.cleanup)}",
+        "",
+    ]
+
+    for workload in config.workloads:
+        lines.extend(
+            [
+                "[[workloads]]",
+                f"name = {_toml_value(workload.name)}",
+                f"operation = {_toml_value(workload.operation.value)}",
+                f"object_size = {workload.object_size}",
+                f"iterations = {workload.iterations}",
+                f"chunk_size = {workload.chunk_size}",
+                f"key_prefix = {_toml_value(workload.key_prefix)}",
+            ]
+        )
+        if workload.source_workload is not None:
+            lines.append(f"source_workload = {_toml_value(workload.source_workload)}")
+        lines.append("")
+
+    for workload in config.cog_workloads:
+        lines.extend(
+            [
+                "[[cog_workloads]]",
+                f"name = {_toml_value(workload.name)}",
+                f"operation = {_toml_value(workload.operation.value)}",
+                f"object_key = {_toml_value(workload.object_key)}",
+                f"iterations = {workload.iterations}",
+                f"band_indexes = {_toml_value(workload.band_indexes)}",
+            ]
+        )
+        if workload.bucket is not None:
+            lines.append(f"bucket = {_toml_value(workload.bucket)}")
+        if workload.window_width is not None:
+            lines.append(f"window_width = {workload.window_width}")
+        if workload.window_height is not None:
+            lines.append(f"window_height = {workload.window_height}")
+        if workload.overview_level is not None:
+            lines.append(f"overview_level = {workload.overview_level}")
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _load_s3_config(raw: dict[str, Any]) -> S3Config:
     return S3Config(
         endpoint_url=str(raw.get("endpoint_url", "http://127.0.0.1:9000")),
@@ -270,3 +327,14 @@ def parse_size(value: Any) -> int:
             number = normalized[: -len(suffix)]
             return int(float(number) * multiplier)
     return int(normalized)
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'

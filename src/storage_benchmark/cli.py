@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import random
-import shutil
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
 
-from storage_benchmark.config import S3Settings, WorkloadConfig, load_config
+from storage_benchmark.config import BenchmarkConfig, S3Settings, WorkloadConfig, load_config, write_config
 from storage_benchmark.cog_gdal import run_cog_workloads
 from storage_benchmark.io_basic import cleanup_keys, run_workloads
 from storage_benchmark.metrics import MetricRecord, write_metrics
@@ -21,7 +20,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "run":
-        return run(args.config)
+        return run(args.config, args.cog_object_key)
     if args.command == "plot":
         return plot(args.result_dir, args.output_dir)
     if args.command == "compare":
@@ -41,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("configs/minio-smoke.toml"),
         help="benchmark TOML configuration",
+    )
+    run_parser.add_argument(
+        "--cog-object-key",
+        type=str,
+        default=None,
+        help="override object_key for all configured COG/GDAL workloads",
     )
 
     plot_parser = subparsers.add_parser("plot", help="generate PNG plots from a result directory")
@@ -91,9 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run(config_path: Path) -> int:
+def run(config_path: Path, cog_object_key: str | None = None) -> int:
     try:
         benchmark_config = load_config(config_path)
+        benchmark_config = _with_cog_object_key_override(benchmark_config, cog_object_key)
         settings = S3Settings.from_config_and_env(benchmark_config.s3)
     except Exception as exc:
         print(f"Configuration error: {exc}")
@@ -134,7 +140,7 @@ def run(config_path: Path) -> int:
                     )
                 )
         records = write_metrics(output_dir, samples)
-        shutil.copyfile(config_path, output_dir / "run_config.toml")
+        write_config(output_dir / "run_config.toml", benchmark_config)
         if benchmark_config.run.cleanup:
             cleanup_keys(client, keys_by_workload)
     except Exception as exc:
@@ -181,6 +187,27 @@ def compare(
     for path in paths:
         print(f"- {path}")
     return 0
+
+
+def _with_cog_object_key_override(
+    benchmark_config: BenchmarkConfig,
+    cog_object_key: str | None,
+) -> BenchmarkConfig:
+    if cog_object_key is None:
+        return benchmark_config
+
+    normalized = cog_object_key.strip().strip("/")
+    if not normalized:
+        raise ValueError("--cog-object-key must not be empty")
+    if not benchmark_config.cog_workloads:
+        raise ValueError("--cog-object-key requires at least one configured COG workload")
+    return replace(
+        benchmark_config,
+        cog_workloads=[
+            replace(workload, object_key=normalized)
+            for workload in benchmark_config.cog_workloads
+        ],
+    )
 
 
 def _workloads_for_repeat(

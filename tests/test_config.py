@@ -11,6 +11,7 @@ from storage_benchmark.config import (
     S3Settings,
     load_config,
     parse_size,
+    write_config,
 )
 
 
@@ -118,6 +119,35 @@ iterations = 1
 
     with pytest.raises(ValueError, match="requires window_width and window_height"):
         load_config(config_path)
+
+
+def test_write_config_round_trips_effective_cog_object_key(tmp_path: Path) -> None:
+    config = load_config(ROOT / "configs/minio-cog-smoke.toml")
+    updated = config.__class__(
+        s3=config.s3,
+        run=config.run,
+        workloads=config.workloads,
+        cog_workloads=[
+            workload.__class__(
+                name=workload.name,
+                operation=workload.operation,
+                object_key="cog/large.tif",
+                bucket=workload.bucket,
+                iterations=workload.iterations,
+                window_width=workload.window_width,
+                window_height=workload.window_height,
+                band_indexes=workload.band_indexes,
+                overview_level=workload.overview_level,
+            )
+            for workload in config.cog_workloads
+        ],
+    )
+    output_path = tmp_path / "run_config.toml"
+
+    write_config(output_path, updated)
+    reloaded = load_config(output_path)
+
+    assert {workload.object_key for workload in reloaded.cog_workloads} == {"cog/large.tif"}
 
 
 def test_s3_settings_env_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
