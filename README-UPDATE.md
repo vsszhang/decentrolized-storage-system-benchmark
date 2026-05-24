@@ -341,6 +341,16 @@ band_indexes = [1]
 - `window_width` / `window_height`：窗口读取尺寸，`randomwindow` 和 `tilewindow` 必填。
 - `band_indexes`：读取的波段列表，默认 `[1]`。
 
+如果只是临时切换 COG 文件，不需要修改 TOML，可以使用 CLI 覆盖：
+
+```bash
+uv run storage-benchmark run \
+  --config configs/minio-cog-smoke.toml \
+  --cog-object-key cog/medium.tif
+```
+
+`--cog-object-key` 会覆盖所有 `[[cog_workloads]]` 的 `object_key`，并写入结果目录中的有效 `run_config.toml`。
+
 ### 3.2 环境变量
 
 敏感信息不写入配置文件，通过环境变量提供：
@@ -376,17 +386,19 @@ export S3_SECRET_ACCESS_KEY="minioadmin"
 
 - 构建命令行解析器。
 - 解析 `storage-benchmark run --config ...`。
-- 分发到 `run(config_path)`。
+- 分发到 `run(config_path, cog_object_key)`。
 
 `build_parser()`
 
 - 使用 `argparse` 定义 CLI。
 - 当前包含三个子命令：`run`、`plot` 和 `compare`。
 - `--config/-c` 默认值是 `configs/minio-smoke.toml`。
+- `--cog-object-key` 可覆盖所有 COG/GDAL workload 的目标对象 key。
 
-`run(config_path)`
+`run(config_path, cog_object_key)`
 
 - 加载 TOML 配置。
+- 如果提供 `--cog-object-key`，覆盖所有 `[[cog_workloads]].object_key`。
 - 合并配置文件和环境变量，生成 `S3Settings`。
 - 创建 `BotoS3Client`。
 - 使用配置中的 `seed` 创建随机数生成器。
@@ -394,7 +406,7 @@ export S3_SECRET_ACCESS_KEY="minioadmin"
 - 调用 `run_workloads(...)` 执行基础 IO 测试任务。
 - 调用 `run_cog_workloads(...)` 执行 COG/GDAL 测试任务。
 - 调用 `write_metrics(...)` 写出结果。
-- 复制本次配置文件到结果目录中的 `run_config.toml`。
+- 将最终生效配置写入结果目录中的 `run_config.toml`。
 
 `_benchmark_kind(config)`
 
@@ -419,9 +431,10 @@ flowchart TD
     B --> C["parse CLI args"]
     C --> D{"command == run?"}
     D -- "no" --> E["print help and return 1"]
-    D -- "yes" --> F["run(config_path)"]
+    D -- "yes" --> F["run(config_path, cog_object_key)"]
     F --> G["load_config()"]
-    G --> H["S3Settings.from_config_and_env()"]
+    G --> R["apply --cog-object-key override if present"]
+    R --> H["S3Settings.from_config_and_env()"]
     H --> I["BotoS3Client(settings)"]
     I --> J["_create_output_dir(results, kind)"]
     J --> K{"configured workloads"}
@@ -430,7 +443,7 @@ flowchart TD
     L --> P["OperationSample"]
     O --> P
     P --> Q["write_metrics()"]
-    Q --> M["copy run_config.toml"]
+    Q --> M["write effective run_config.toml"]
     M --> N["_print_records()"]
 ```
 
@@ -782,6 +795,14 @@ s3://benchmark/cog/sample.tif
 
 ```bash
 uv run storage-benchmark run --config configs/minio-cog-smoke.toml
+```
+
+临时选择 medium 或 large COG：
+
+```bash
+uv run storage-benchmark run \
+  --config configs/minio-cog-smoke.toml \
+  --cog-object-key cog/large.tif
 ```
 
 结果输出位置：

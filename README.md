@@ -71,6 +71,17 @@ The COG/GDAL profile expects an existing COG object in MinIO. The default config
 reads `s3://benchmark/cog/sample.tif`, so upload or copy a COG to that key before
 running the benchmark.
 
+Override the COG object key at runtime when switching between existing COG files:
+
+```bash
+uv run storage-benchmark run \
+  --config configs/minio-cog-smoke.toml \
+  --cog-object-key cog/medium.tif
+```
+
+The override applies to all `[[cog_workloads]]`, and the copied
+`run_config.toml` records the effective object key used by that run.
+
 Each run writes:
 
 - `results/io/<timestamp>/...` for basic IO-only configs
