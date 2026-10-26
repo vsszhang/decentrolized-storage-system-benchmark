@@ -1,9 +1,9 @@
 # Decentralized Storage System Benchmark
 
 Python/uv benchmark tools for S3-compatible object storage systems. The current
-phase implements lightweight basic IO workloads and COG/GDAL read workloads for
-MinIO on a lab VPS, while keeping the S3 access layer compatible with future
-Ceph RGW testing.
+phase implements lightweight basic IO and COG/GDAL read workloads, with MinIO
+profiles and locally tested Ceph RGW paired-bucket configuration/access checks.
+Real Ceph deployment and server-side acceptance remain separate steps.
 
 ## Setup
 
@@ -36,6 +36,82 @@ export S3_USE_SSL="false"
 ```
 
 ## Run Benchmarks
+
+### Ceph paired buckets (local implementation; server acceptance pending)
+
+The four `configs/ceph-{rep,ec}-{io,cog}-smoke.toml` profiles target `zhang_rep`
+(rep3) and `zhang_ec` (ec4_2). Their endpoint and region are intentionally empty:
+set `S3_ENDPOINT_URL` to the confirmed RGW HTTP/HTTPS URL and `S3_REGION` to the
+confirmed region. Set `S3_USE_SSL` to match the URL scheme. The SSH login address
+is not an RGW endpoint. Credentials remain environment-only as described above.
+Unset a stale `S3_BUCKET`; a target override conflicting with a Ceph profile
+is rejected before any data request.
+
+```bash
+uv run storage-benchmark check --config configs/ceph-rep-io-smoke.toml
+uv run storage-benchmark check --config configs/ceph-ec-io-smoke.toml
+uv run storage-benchmark run --config configs/ceph-rep-io-smoke.toml --pair-index 1
+uv run storage-benchmark run --config configs/ceph-ec-io-smoke.toml --pair-index 1
+```
+
+`check` performs small-object PUT, HEAD, full GET, Range GET and byte validation,
+then deletes only its disposable object and verifies its absence. Add `--list`
+when prefix-listing permission is required by your workflow; otherwise that
+step is explicitly skipped. It does not execute performance workloads or
+require them to exist. Exit codes: 0 success, 1 request/check/cleanup failure,
+2 configuration error. Check results are under `<output_dir>/check/<run-id>/`.
+
+The optional `[experiment]` table supplies `experiment_id`, `backend`,
+`storage_policy`, and `pair_index` (default 1). `run --pair-index` overrides the
+configured round; matching REP/EC runs share experiment ID and round, while
+every invocation gets its own run ID. Old profiles without `[experiment]`
+continue to work; `--pair-index` requires that table.
+
+Ceph IO/COG results use `results/ceph-rep/{io,cog}/<run-id>/` and
+`results/ceph-ec/{io,cog}/<run-id>/`. Each run saves effective `run_config.toml`,
+`run_metadata.json`, `created_objects.json`, `run.log`, and the standard metrics
+and samples. Successful samples are appended to CSV immediately; on completion,
+ordinary failure or KeyboardInterrupt, JSON and aggregates are exported too.
+Partial/failed runs must not be interpreted as complete experiments. Reports now
+list their state and errors and exclude incomplete measurements from aggregates.
+
+IO keys are isolated below a run-owned prefix; `cleanup=true` attempts every
+registered key even after a workload fails. Cleanup failures are recorded
+separately and return nonzero without discarding successful measurements.
+Existing COGs are never registered for automatic deletion. IO contents now use a
+logical identity (generator version, seed, workload, object index, size and
+generation chunk size), independent of bucket and run prefix. After all timed
+workloads, each generated object is streamed again to verify its full length,
+contents and SHA-256. This adds validation traffic, not performance samples;
+`io_verification` and `verification_seconds` record the separate phase.
+The generator repeats digest patterns; it is deterministic, not representative
+of arbitrary compressibility. Record server compression/deduplication settings.
+
+To validate COG identity and pixels against the trusted upload source, pass the
+same reference file for both buckets:
+
+```bash
+uv run storage-benchmark run --config configs/ceph-rep-cog-smoke.toml \
+  --cog-object-key cog/sample.tif --cog-reference /path/to/source.tif --pair-index 1
+uv run storage-benchmark run --config configs/ceph-ec-cog-smoke.toml \
+  --cog-object-key cog/sample.tif --cog-reference /path/to/source.tif --pair-index 1
+```
+
+After timed reads, validation compares the remote SHA-256/length, raster
+metadata and a bounded selection of actual windows against that local file.
+The manifest records compression, bands, types, tiles and overviews. Without a
+reference, existing COG reads still work but verification remains pending and
+the run cannot enter a verified REP/EC pair. This is reference validation, not
+an OGC conformance certification. `overview_level` remains unsupported and an
+explicit setting is rejected.
+
+Window sample timing stops immediately after `dataset.read`; metadata recording
+and reference verification are outside that timer. Full-read timing includes
+open/read/close. The historical baseline can still be viewed descriptively;
+the changed generator and timing method are not silently treated as identical.
+Multipart support and actual Ceph deployment/acceptance remain later tasks.
+
+### Existing MinIO profiles
 
 Smoke profile:
 
@@ -155,6 +231,16 @@ with:
 - `combined_samples.csv`
 - `summary.md`
 - cross-run throughput, IOPS, latency, and COG-specific PNG charts
+
+New reports also include `pair_validation.json`, `paired_metrics.csv` and
+`paired_samples.csv` (plus a paired throughput chart when valid pairs exist).
+Only completed, correctly counted runs with matching methods, environment,
+verified input contents and access sequence enter a REP/EC pair. Missing sides,
+duplicates, inconsistent sample aggregates and precise differing fields are
+reported. One experiment cannot silently change method between rounds.
+Legacy results remain readable with unknown labels and do not become inferred
+Ceph pairs. Plots and summaries use MiB/s while retaining `throughput_mb_s` in
+CSV/JSON. COG throughput is decoded-array processing rate, not network traffic.
 
 ## Tests
 
