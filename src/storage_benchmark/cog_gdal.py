@@ -11,6 +11,7 @@ from typing import Any
 from storage_benchmark.config import CogOperation, CogWorkloadConfig, S3Settings
 from storage_benchmark.gdal_client import open_raster
 from storage_benchmark.metrics import OperationSample
+from storage_benchmark.run_state import RunJournal, record_sample
 
 DatasetOpener = Callable[[S3Settings, str, str], AbstractContextManager[Any]]
 
@@ -21,17 +22,20 @@ def run_cog_workloads(
     rng: random.Random,
     repeat_index: int = 1,
     opener: DatasetOpener = open_raster,
+    journal: RunJournal | None = None,
 ) -> list[OperationSample]:
     samples: list[OperationSample] = []
     for workload in workloads:
+        if journal is not None:
+            journal.step = f"{workload.operation.value}:{workload.name}"
         if workload.operation == CogOperation.COGINFO:
-            samples.extend(coginfo(workload, settings, repeat_index, opener))
+            samples.extend(coginfo(workload, settings, repeat_index, opener, journal))
         elif workload.operation == CogOperation.FULLREAD:
-            samples.extend(fullread(workload, settings, repeat_index, opener))
+            samples.extend(fullread(workload, settings, repeat_index, opener, journal))
         elif workload.operation == CogOperation.RANDOMWINDOW:
-            samples.extend(randomwindow(workload, settings, rng, repeat_index, opener))
+            samples.extend(randomwindow(workload, settings, rng, repeat_index, opener, journal))
         elif workload.operation == CogOperation.TILEWINDOW:
-            samples.extend(tilewindow(workload, settings, repeat_index, opener))
+            samples.extend(tilewindow(workload, settings, repeat_index, opener, journal))
         else:
             raise ValueError(f"unsupported COG operation: {workload.operation}")
     return samples
@@ -42,6 +46,7 @@ def coginfo(
     settings: S3Settings,
     repeat_index: int = 1,
     opener: DatasetOpener = open_raster,
+    journal: RunJournal | None = None,
 ) -> list[OperationSample]:
     samples = []
     for _ in range(workload.iterations):
@@ -49,8 +54,8 @@ def coginfo(
         started = time.perf_counter()
         with opener(settings, _bucket(workload, settings), workload.object_key) as dataset:
             details = _dataset_details(dataset)
-        samples.append(
-            _sample(
+        record_sample(
+            samples, _sample(
                 workload,
                 settings,
                 bytes_count=0,
@@ -58,7 +63,7 @@ def coginfo(
                 started_at=started_at,
                 repeat_index=repeat_index,
                 details=details,
-            )
+            ), journal,
         )
     return samples
 
@@ -68,6 +73,7 @@ def fullread(
     settings: S3Settings,
     repeat_index: int = 1,
     opener: DatasetOpener = open_raster,
+    journal: RunJournal | None = None,
 ) -> list[OperationSample]:
     samples = []
     for _ in range(workload.iterations):
@@ -76,8 +82,8 @@ def fullread(
         with opener(settings, _bucket(workload, settings), workload.object_key) as dataset:
             data = dataset.read(workload.band_indexes)
             details = _dataset_details(dataset)
-        samples.append(
-            _sample(
+        record_sample(
+            samples, _sample(
                 workload,
                 settings,
                 bytes_count=_nbytes(data),
@@ -85,7 +91,7 @@ def fullread(
                 started_at=started_at,
                 repeat_index=repeat_index,
                 details=details,
-            )
+            ), journal,
         )
     return samples
 
@@ -96,6 +102,7 @@ def randomwindow(
     rng: random.Random,
     repeat_index: int = 1,
     opener: DatasetOpener = open_raster,
+    journal: RunJournal | None = None,
 ) -> list[OperationSample]:
     from rasterio.windows import Window
 
@@ -103,7 +110,7 @@ def randomwindow(
     with opener(settings, _bucket(workload, settings), workload.object_key) as dataset:
         for _ in range(workload.iterations):
             window = _random_window(workload, dataset, rng, Window)
-            samples.append(_read_window(workload, settings, dataset, window, repeat_index))
+            record_sample(samples, _read_window(workload, settings, dataset, window, repeat_index), journal)
     return samples
 
 
@@ -112,6 +119,7 @@ def tilewindow(
     settings: S3Settings,
     repeat_index: int = 1,
     opener: DatasetOpener = open_raster,
+    journal: RunJournal | None = None,
 ) -> list[OperationSample]:
     from rasterio.windows import Window
 
@@ -119,7 +127,7 @@ def tilewindow(
     with opener(settings, _bucket(workload, settings), workload.object_key) as dataset:
         for index in range(workload.iterations):
             window = _tile_window(workload, dataset, index, Window)
-            samples.append(_read_window(workload, settings, dataset, window, repeat_index))
+            record_sample(samples, _read_window(workload, settings, dataset, window, repeat_index), journal)
     return samples
 
 
@@ -133,6 +141,7 @@ def _read_window(
     started_at = datetime.now(UTC).isoformat()
     started = time.perf_counter()
     data = dataset.read(workload.band_indexes, window=window)
+    duration = time.perf_counter() - started
     details = _dataset_details(dataset)
     details["window"] = {
         "col_off": int(window.col_off),
@@ -144,7 +153,7 @@ def _read_window(
         workload,
         settings,
         bytes_count=_nbytes(data),
-        duration_seconds=time.perf_counter() - started,
+        duration_seconds=duration,
         started_at=started_at,
         repeat_index=repeat_index,
         details=details,
@@ -182,6 +191,9 @@ def _dataset_details(dataset: Any) -> dict[str, Any]:
         "count": dataset.count,
         "crs": str(getattr(dataset, "crs", "")),
         "block_shapes": [list(shape) for shape in getattr(dataset, "block_shapes", [])],
+        "dtypes": list(getattr(dataset, "dtypes", [])),
+        "compression": str(getattr(dataset, "compression", None)),
+        "overviews": [dataset.overviews(i) for i in range(1, dataset.count + 1)] if hasattr(dataset, "overviews") else [],
     }
 
 
@@ -199,6 +211,8 @@ def _sample(
         "bucket": _bucket(workload, settings),
         "object_key": workload.object_key,
         "band_indexes": workload.band_indexes,
+        "timing_scope": "read_only" if workload.operation in {CogOperation.RANDOMWINDOW, CogOperation.TILEWINDOW} else "open_and_read",
+        "bytes_semantics": "metadata_only" if workload.operation == CogOperation.COGINFO else "decoded_array",
     }
     return OperationSample(
         workload=workload.name,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol
 
 import boto3
 from botocore.config import Config
@@ -23,6 +23,12 @@ class S3Client(Protocol):
     def list_keys(self, prefix: str) -> list[str]:
         ...
 
+    def head_object(self, key: str) -> dict[str, Any]:
+        ...
+
+    def get_object_range(self, key: str, start: int, end: int) -> dict[str, Any]:
+        ...
+
 
 class BotoS3Client:
     def __init__(self, settings: S3Settings) -> None:
@@ -34,7 +40,7 @@ class BotoS3Client:
             aws_secret_access_key=settings.secret_access_key,
             region_name=settings.region,
             use_ssl=settings.use_ssl,
-            config=Config(signature_version="s3v4"),
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
 
     def put_object(self, key: str, body: bytes | BinaryIO, content_length: int | None = None) -> None:
@@ -49,6 +55,18 @@ class BotoS3Client:
 
     def delete_object(self, key: str) -> None:
         self._client.delete_object(Bucket=self.bucket, Key=key)
+
+    def head_object(self, key: str) -> dict[str, Any]:
+        return self._client.head_object(Bucket=self.bucket, Key=key)
+
+    def get_object_range(self, key: str, start: int, end: int) -> dict[str, Any]:
+        return self._client.get_object(Bucket=self.bucket, Key=key, Range=f"bytes={start}-{end}")
+
+    def connection_options(self) -> dict[str, Any]:
+        config = self._client.meta.config
+        return {"connect_timeout": config.connect_timeout, "read_timeout": config.read_timeout,
+                "retries": config.retries, "signature_version": config.signature_version,
+                "addressing_style": config.s3.get("addressing_style")}
 
     def list_keys(self, prefix: str) -> list[str]:
         keys: list[str] = []

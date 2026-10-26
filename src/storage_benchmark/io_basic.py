@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import random
 import time
 from collections.abc import MutableMapping
 from datetime import UTC, datetime
 
-from storage_benchmark.config import Operation, WorkloadConfig
+from storage_benchmark.config import IO_GENERATOR_VERSION, Operation, WorkloadConfig
 from storage_benchmark.metrics import OperationSample
 from storage_benchmark.s3_client import S3Client
+from storage_benchmark.run_state import RunJournal, record_sample
 
 
 class DeterministicBytesStream(io.RawIOBase):
@@ -78,19 +80,23 @@ def run_workloads(
     client: S3Client,
     rng: random.Random,
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
+    data_seed: int = 42,
 ) -> tuple[list[OperationSample], dict[str, list[str]]]:
     samples: list[OperationSample] = []
     produced_keys: dict[str, list[str]] = {}
 
     for workload in workloads:
+        if journal is not None:
+            journal.step = f"{workload.operation.value}:{workload.name}"
         if workload.operation == Operation.SEQWRITE:
-            keys = seqwrite(workload, client, samples, repeat_index)
+            keys = seqwrite(workload, client, samples, repeat_index, journal, data_seed)
         elif workload.operation == Operation.SEQREAD:
-            keys = seqread(workload, client, produced_keys, samples, repeat_index)
+            keys = seqread(workload, client, produced_keys, samples, repeat_index, journal)
         elif workload.operation == Operation.RANDOMWRITE:
-            keys = randomwrite(workload, client, samples, repeat_index)
+            keys = randomwrite(workload, client, samples, repeat_index, journal, data_seed)
         elif workload.operation == Operation.RANDOMREAD:
-            keys = randomread(workload, client, produced_keys, samples, rng, repeat_index)
+            keys = randomread(workload, client, produced_keys, samples, rng, repeat_index, journal)
         else:
             raise ValueError(f"unsupported operation: {workload.operation}")
         produced_keys[workload.name] = keys
@@ -103,12 +109,15 @@ def seqwrite(
     client: S3Client,
     samples: list[OperationSample],
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
+    data_seed: int = 42,
 ) -> list[str]:
     keys: list[str] = []
     for index in range(workload.iterations):
         key = f"{workload.key_prefix}/{workload.name}/{index:06d}.bin"
-        stream = DeterministicBytesStream(workload.object_size, key, workload.chunk_size)
-        samples.append(_measure_upload(workload, client, key, stream, repeat_index))
+        identity = content_identity(workload, index, data_seed)
+        stream = content_stream(identity)
+        record_sample(samples, _measure_upload(workload, client, key, stream, repeat_index, journal, identity), journal)
         keys.append(key)
     return keys
 
@@ -119,10 +128,12 @@ def seqread(
     produced_keys: MutableMapping[str, list[str]],
     samples: list[OperationSample],
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
 ) -> list[str]:
     keys = _source_keys(workload, produced_keys)
-    for key in keys[: workload.iterations]:
-        samples.append(_measure_download(workload, client, key, repeat_index))
+    for index in range(workload.iterations):
+        key = keys[index % len(keys)]
+        record_sample(samples, _measure_download(workload, client, key, repeat_index, journal), journal)
     return keys
 
 
@@ -131,12 +142,15 @@ def randomwrite(
     client: S3Client,
     samples: list[OperationSample],
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
+    data_seed: int = 42,
 ) -> list[str]:
     keys: list[str] = []
     for index in range(workload.iterations):
         key = f"{workload.key_prefix}/{workload.name}/object-{index:06d}.bin"
-        stream = DeterministicBytesStream(workload.object_size, key, workload.chunk_size)
-        samples.append(_measure_upload(workload, client, key, stream, repeat_index))
+        identity = content_identity(workload, index, data_seed)
+        stream = content_stream(identity)
+        record_sample(samples, _measure_upload(workload, client, key, stream, repeat_index, journal, identity), journal)
         keys.append(key)
     return keys
 
@@ -148,21 +162,13 @@ def randomread(
     samples: list[OperationSample],
     rng: random.Random,
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
 ) -> list[str]:
     keys = _source_keys(workload, produced_keys)
     for _ in range(workload.iterations):
         key = rng.choice(keys)
-        samples.append(_measure_download(workload, client, key, repeat_index))
+        record_sample(samples, _measure_download(workload, client, key, repeat_index, journal), journal)
     return keys
-
-
-def cleanup_keys(client: S3Client, keys_by_workload: dict[str, list[str]]) -> None:
-    seen: set[str] = set()
-    for keys in keys_by_workload.values():
-        for key in keys:
-            if key not in seen:
-                client.delete_object(key)
-                seen.add(key)
 
 
 def _source_keys(
@@ -182,18 +188,31 @@ def _measure_upload(
     key: str,
     body: DeterministicBytesStream,
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
+    identity: dict | None = None,
 ) -> OperationSample:
+    if journal is not None:
+        journal.record_object(key, "planned", identity)
     started_at = datetime.now(UTC).isoformat()
     started = time.perf_counter()
-    client.put_object(key, body, content_length=workload.object_size)
+    try:
+        client.put_object(key, body, content_length=workload.object_size)
+    except (Exception, KeyboardInterrupt):
+        if journal is not None:
+            journal.record_object(key, "upload_uncertain")
+        raise
+    duration = time.perf_counter() - started
+    if journal is not None:
+        journal.record_object(key, "uploaded")
     return OperationSample(
         workload=workload.name,
         operation=workload.operation.value,
         object_key=key,
         bytes_count=workload.object_size,
-        duration_seconds=time.perf_counter() - started,
+        duration_seconds=duration,
         started_at=started_at,
         repeat_index=repeat_index,
+        details=json.dumps({"content_identity": identity}, sort_keys=True),
     )
 
 
@@ -202,6 +221,7 @@ def _measure_download(
     client: S3Client,
     key: str,
     repeat_index: int = 1,
+    journal: RunJournal | None = None,
 ) -> OperationSample:
     started_at = datetime.now(UTC).isoformat()
     started = time.perf_counter()
@@ -217,12 +237,61 @@ def _measure_download(
         close = getattr(stream, "close", None)
         if close:
             close()
+    duration = time.perf_counter() - started
+    if bytes_count != workload.object_size:
+        raise ValueError("Downloaded length differs from workload object_size")
     return OperationSample(
         workload=workload.name,
         operation=workload.operation.value,
         object_key=key,
         bytes_count=bytes_count,
-        duration_seconds=time.perf_counter() - started,
+        duration_seconds=duration,
         started_at=started_at,
         repeat_index=repeat_index,
+        details=json.dumps({"content_identity": journal.objects[key].get("content_identity")}, sort_keys=True) if journal else "",
     )
+
+
+def content_identity(workload: WorkloadConfig, index: int, seed: int) -> dict:
+    return {"generator": IO_GENERATOR_VERSION, "seed": seed, "workload": workload.name,
+            "index": index, "size": workload.object_size, "chunk_size": workload.chunk_size}
+
+
+def content_stream(identity: dict) -> DeterministicBytesStream:
+    seed = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return DeterministicBytesStream(identity["size"], seed, identity["chunk_size"])
+
+
+def verify_io(client: S3Client, journal: RunJournal) -> None:
+    """Separate full-stream verification; never emits performance samples."""
+    journal.step = "io_verification"
+    for item in journal.objects.values():
+        identity = item.get("content_identity")
+        if identity is None:
+            continue
+        expected = content_stream(identity)
+        entry = {"bucket": item["bucket"], "object_key": item["key"], "content_identity": identity,
+                 "coverage": "full_object", "bytes_checked": 0, "sha256": None, "status": "running"}
+        journal.metadata["io_verification"].append(entry)
+        journal.save()
+        stream = None
+        try:
+            stream = client.get_object_stream(item["key"])
+            digest = hashlib.sha256()
+            while chunk := stream.read(identity["chunk_size"]):
+                if chunk != expected.read(len(chunk)):
+                    entry["error"] = "content_mismatch"
+                    raise ValueError("Object content differs from its logical data identity")
+                digest.update(chunk)
+                entry["bytes_checked"] += len(chunk)
+            if entry["bytes_checked"] != identity["size"]:
+                entry["error"] = "length_mismatch"
+                raise ValueError("Object length differs from its logical data identity")
+            entry.update(status="passed", sha256=digest.hexdigest())
+        except (Exception, KeyboardInterrupt):
+            entry["status"] = "failed"
+            raise
+        finally:
+            if stream is not None:
+                stream.close()
+            journal.save()

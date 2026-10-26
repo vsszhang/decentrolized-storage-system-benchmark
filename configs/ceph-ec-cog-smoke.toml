@@ -1,0 +1,52 @@
+# Set S3_ENDPOINT_URL and S3_REGION to the confirmed RGW values.
+# S3_USE_SSL must match http/https. SSH addresses are not RGW endpoints.
+# Credentials are environment-only; never add them to this file.
+[s3]
+endpoint_url = ""
+bucket = "zhang_ec"
+region = ""
+use_ssl = false
+
+[run]
+name = "ceph-ec-cog-smoke"
+output_dir = "results/ceph-ec"
+seed = 42
+repeats = 3
+cleanup = false
+
+[[cog_workloads]]
+name = "cog-info"
+operation = "coginfo"
+object_key = "cog/sample.tif"
+iterations = 1
+
+[[cog_workloads]]
+name = "cog-full-read"
+operation = "fullread"
+object_key = "cog/sample.tif"
+iterations = 1
+band_indexes = [1]
+
+[[cog_workloads]]
+name = "cog-random-window"
+operation = "randomwindow"
+object_key = "cog/sample.tif"
+iterations = 50
+window_width = 512
+window_height = 512
+band_indexes = [1]
+
+[[cog_workloads]]
+name = "cog-tile-window"
+operation = "tilewindow"
+object_key = "cog/sample.tif"
+iterations = 50
+window_width = 512
+window_height = 512
+band_indexes = [1]
+
+[experiment]
+experiment_id = "ceph-cog-smoke-v1"
+backend = "ceph"
+storage_policy = "ec4_2"
+pair_index = 1

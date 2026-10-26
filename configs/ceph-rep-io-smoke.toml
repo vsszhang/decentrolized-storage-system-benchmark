@@ -1,0 +1,55 @@
+# Set S3_ENDPOINT_URL and S3_REGION to the confirmed RGW values.
+# S3_USE_SSL must match http/https. SSH addresses are not RGW endpoints.
+# Credentials are environment-only; never add them to this file.
+[s3]
+endpoint_url = ""
+bucket = "zhang_rep"
+region = ""
+use_ssl = false
+
+[run]
+name = "ceph-rep-io-smoke"
+output_dir = "results/ceph-rep"
+seed = 42
+repeats = 3
+cleanup = false
+
+[[workloads]]
+name = "small-random-write"
+operation = "randomwrite"
+object_size = "16KiB"
+iterations = 20
+chunk_size = "16KiB"
+key_prefix = "smoke/small"
+
+[[workloads]]
+name = "small-random-read"
+operation = "randomread"
+object_size = "16KiB"
+iterations = 20
+chunk_size = "16KiB"
+key_prefix = "smoke/small"
+source_workload = "small-random-write"
+
+[[workloads]]
+name = "medium-seq-write"
+operation = "seqwrite"
+object_size = "10MiB"
+iterations = 1
+chunk_size = "1MiB"
+key_prefix = "smoke/medium"
+
+[[workloads]]
+name = "medium-seq-read"
+operation = "seqread"
+object_size = "10MiB"
+iterations = 1
+chunk_size = "1MiB"
+key_prefix = "smoke/medium"
+source_workload = "medium-seq-write"
+
+[experiment]
+experiment_id = "ceph-io-smoke-v1"
+backend = "ceph"
+storage_policy = "rep3"
+pair_index = 1

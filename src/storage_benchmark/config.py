@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+import json
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+IO_GENERATOR_VERSION = "logical-sha256-repeat-v2"
 
 
 class Operation(StrEnum):
@@ -40,6 +44,14 @@ class RunConfig:
 
 
 @dataclass(frozen=True)
+class ExperimentConfig:
+    experiment_id: str
+    backend: str
+    storage_policy: str
+    pair_index: int = 1
+
+
+@dataclass(frozen=True)
 class WorkloadConfig:
     name: str
     operation: Operation
@@ -69,13 +81,14 @@ class BenchmarkConfig:
     run: RunConfig = field(default_factory=RunConfig)
     workloads: list[WorkloadConfig] = field(default_factory=list)
     cog_workloads: list[CogWorkloadConfig] = field(default_factory=list)
+    experiment: ExperimentConfig | None = None
 
 
 @dataclass(frozen=True)
 class S3Settings:
     endpoint_url: str
-    access_key_id: str
-    secret_access_key: str
+    access_key_id: str = field(repr=False)
+    secret_access_key: str = field(repr=False)
     bucket: str
     region: str = "us-east-1"
     use_ssl: bool = False
@@ -96,8 +109,22 @@ class S3Settings:
             missing.append("S3_SECRET_ACCESS_KEY")
         if not bucket:
             missing.append("S3_BUCKET or s3.bucket")
+        if not endpoint_url:
+            missing.append("S3_ENDPOINT_URL or s3.endpoint_url")
+        if not region:
+            missing.append("S3_REGION or s3.region")
         if missing:
             raise RuntimeError(f"Missing required S3 settings: {', '.join(missing)}")
+
+        endpoint = urlsplit(endpoint_url)
+        if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
+            raise ValueError("S3 endpoint must be an http/https URL with a hostname and optional port")
+        if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+            raise ValueError("S3 endpoint must not contain credentials, query parameters or fragments")
+        if endpoint.path.strip("/"):
+            raise ValueError("S3 endpoint path prefixes are not supported by the current GDAL adapter")
+        if use_ssl != (endpoint.scheme == "https"):
+            raise ValueError("S3_USE_SSL or s3.use_ssl must match the endpoint URL scheme")
 
         return cls(
             endpoint_url=endpoint_url,
@@ -109,17 +136,42 @@ class S3Settings:
         )
 
 
-def load_config(path: Path) -> BenchmarkConfig:
+def load_config(path: Path, *, for_check: bool = False) -> BenchmarkConfig:
     with path.open("rb") as config_file:
         raw = tomllib.load(config_file)
 
     s3 = _load_s3_config(raw.get("s3", {}))
-    run = _load_run_config(raw.get("run", {}))
-    workloads = [_load_workload_config(item) for item in raw.get("workloads", [])]
-    cog_workloads = [_load_cog_workload_config(item) for item in raw.get("cog_workloads", [])]
-    config = BenchmarkConfig(s3=s3, run=run, workloads=workloads, cog_workloads=cog_workloads)
-    _validate_config(config)
+    run_raw = raw.get("run", {})
+    if for_check:
+        run_raw = {name: run_raw[name] for name in ("name", "output_dir") if name in run_raw}
+    run = _load_run_config(run_raw)
+    workloads = [] if for_check else [_load_workload_config(item) for item in raw.get("workloads", [])]
+    cog_workloads = [] if for_check else [_load_cog_workload_config(item) for item in raw.get("cog_workloads", [])]
+    experiment = _load_experiment(raw["experiment"]) if "experiment" in raw else None
+    config = BenchmarkConfig(s3=s3, run=run, workloads=workloads, cog_workloads=cog_workloads, experiment=experiment)
+    _validate_config(config, require_workloads=not for_check)
     return config
+
+
+def effective_config(config: BenchmarkConfig, settings: S3Settings, pair_index: int | None = None) -> BenchmarkConfig:
+    experiment = config.experiment
+    if pair_index is not None:
+        _positive_pair_index(pair_index)
+        if experiment is None:
+            raise ValueError("--pair-index requires [experiment]")
+        experiment = replace(experiment, pair_index=pair_index)
+    if experiment and experiment.backend == "ceph":
+        expected = config.s3.bucket
+        if not expected:
+            raise ValueError("Ceph experiments require an explicit s3.bucket as the expected target")
+        if settings.bucket != expected or any(w.bucket and w.bucket != expected for w in config.cog_workloads):
+            raise ValueError("Effective bucket does not match the configured Ceph experiment target")
+    return replace(
+        config,
+        s3=S3Config(settings.endpoint_url, settings.bucket, settings.region, settings.use_ssl),
+        cog_workloads=[replace(w, bucket=w.bucket or settings.bucket) for w in config.cog_workloads],
+        experiment=experiment,
+    )
 
 
 def write_config(path: Path, config: BenchmarkConfig) -> None:
@@ -138,6 +190,12 @@ def write_config(path: Path, config: BenchmarkConfig) -> None:
         f"cleanup = {_toml_value(config.run.cleanup)}",
         "",
     ]
+
+    if config.experiment:
+        lines.extend(["[experiment]"])
+        for name in ("experiment_id", "backend", "storage_policy", "pair_index"):
+            lines.append(f"{name} = {_toml_value(getattr(config.experiment, name))}")
+        lines.append("")
 
     for workload in config.workloads:
         lines.extend(
@@ -234,8 +292,30 @@ def _require_keys(raw: dict[str, Any], *keys: str) -> None:
         raise ValueError(f"missing required config field(s): {', '.join(missing)}")
 
 
-def _validate_config(config: BenchmarkConfig) -> None:
-    if not config.workloads and not config.cog_workloads:
+def _load_experiment(raw: dict[str, Any]) -> ExperimentConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("experiment must be a TOML table")
+    _require_keys(raw, "experiment_id", "backend", "storage_policy")
+    for name in ("experiment_id", "backend", "storage_policy"):
+        if not isinstance(raw[name], str) or not raw[name].strip():
+            raise ValueError(f"experiment.{name} must be a nonempty string")
+    if raw["backend"] not in {"ceph", "minio"}:
+        raise ValueError("experiment.backend must be ceph or minio")
+    policies = {"rep3", "ec4_2"} if raw["backend"] == "ceph" else {"rep3", "ec4_2", "unknown"}
+    if raw["storage_policy"] not in policies:
+        raise ValueError("experiment.storage_policy is not valid for the selected backend")
+    pair_index = raw.get("pair_index", 1)
+    _positive_pair_index(pair_index)
+    return ExperimentConfig(raw["experiment_id"], raw["backend"], raw["storage_policy"], pair_index)
+
+
+def _positive_pair_index(value: Any) -> None:
+    if type(value) is not int or value < 1:
+        raise ValueError("pair_index must be a positive integer")
+
+
+def _validate_config(config: BenchmarkConfig, *, require_workloads: bool = True) -> None:
+    if require_workloads and not config.workloads and not config.cog_workloads:
         raise ValueError("at least one workload or cog_workload is required")
     if config.run.repeats <= 0:
         raise ValueError("run repeats must be positive")
@@ -263,6 +343,12 @@ def _validate_config(config: BenchmarkConfig) -> None:
                 f"workload {workload.name} references unknown source_workload "
                 f"{workload.source_workload}"
             )
+        if is_read:
+            source = next(w for w in config.workloads if w.name == workload.source_workload)
+            if (source.operation not in {Operation.SEQWRITE, Operation.RANDOMWRITE}
+                    or config.workloads.index(source) >= config.workloads.index(workload)
+                    or source.object_size != workload.object_size):
+                raise ValueError("Read source must be an earlier write workload with the same object_size")
 
     cog_names: set[str] = set()
     for workload in config.cog_workloads:
@@ -280,6 +366,8 @@ def _validate_config(config: BenchmarkConfig) -> None:
             raise ValueError(f"cog workload {workload.name} band indexes must be positive")
         if workload.overview_level is not None and workload.overview_level < 0:
             raise ValueError(f"cog workload {workload.name} overview_level must be non-negative")
+        if workload.overview_level is not None:
+            raise ValueError("overview_level is not implemented; omit it for base-resolution reads")
 
         is_window_read = workload.operation in {
             CogOperation.RANDOMWINDOW,
@@ -336,5 +424,4 @@ def _toml_value(value: Any) -> str:
         return str(value)
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return json.dumps(str(value), ensure_ascii=False)

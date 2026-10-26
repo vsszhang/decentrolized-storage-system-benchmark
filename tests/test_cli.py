@@ -121,7 +121,7 @@ def test_cog_object_key_override_requires_cog_workloads() -> None:
 def test_run_cli_accepts_cog_object_key(monkeypatch) -> None:
     captured = {}
 
-    def fake_run(config_path, cog_object_key=None):
+    def fake_run(config_path, cog_object_key=None, pair_index=None):
         captured["config_path"] = config_path
         captured["cog_object_key"] = cog_object_key
         return 0
