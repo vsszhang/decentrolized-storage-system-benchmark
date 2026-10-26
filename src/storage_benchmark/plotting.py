@@ -15,6 +15,14 @@ def generate_plots(result_dir: Path, output_dir: Path | None = None) -> list[Pat
     if not samples:
         raise ValueError(f"no sample rows found in {result_dir / 'samples.csv'}")
 
+    meta_path = result_dir / "run_metadata.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        if meta.get("status") != "completed" or not meta.get("ended_at"):
+            raise ValueError("Cannot plot an incomplete run as completed performance")
+        context = f"{meta.get('backend')} / {meta.get('bucket')} / {meta.get('storage_policy')} / round {meta.get('pair_index')} / cleanup {meta.get('cleanup_status')}"
+        metrics = [{**row, "run_label": context} for row in metrics]
+        samples = [{**row, "run_label": context} for row in samples]
     output = output_dir or result_dir / "plots"
     output.mkdir(parents=True, exist_ok=True)
 
@@ -30,7 +38,7 @@ def generate_plots(result_dir: Path, output_dir: Path | None = None) -> list[Pat
             output / "throughput_mb_s.png",
             "Throughput by Workload",
             "throughput_mb_s",
-            "MB/s",
+            "MiB/s",
         ),
         _plot_metric_bars(
             plt,
@@ -73,10 +81,7 @@ def _plot_metric_bars(plt, rows: list[dict[str, str]], path: Path, title: str, k
     ax.set_ylabel(ylabel)
     ax.grid(axis="y", alpha=0.25)
     ax.tick_params(axis="x", labelrotation=30)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _plot_latency_summary(plt, rows: list[dict[str, str]], path: Path) -> Path:
@@ -112,10 +117,7 @@ def _plot_latency_summary(plt, rows: list[dict[str, str]], path: Path) -> Path:
     ax.grid(axis="y", alpha=0.25)
     ax.tick_params(axis="x", labelrotation=30)
     ax.legend()
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _plot_latency_distribution(plt, rows: list[dict[str, str]], path: Path) -> Path:
@@ -131,10 +133,7 @@ def _plot_latency_distribution(plt, rows: list[dict[str, str]], path: Path) -> P
     ax.set_ylabel("Latency (ms)")
     ax.grid(axis="y", alpha=0.25)
     ax.tick_params(axis="x", labelrotation=30)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _generate_cog_plots(plt, metrics: list[dict[str, str]], samples: list[dict[str, str]], output: Path) -> list[Path]:
@@ -171,10 +170,7 @@ def _plot_cog_latency_by_operation(plt, rows: list[dict[str, str]], path: Path) 
     ax.set_title("COG Latency by Operation")
     ax.set_ylabel("Latency (ms)")
     ax.grid(axis="y", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _plot_cog_read_size_by_operation(plt, rows: list[dict[str, str]], path: Path) -> Path:
@@ -187,10 +183,7 @@ def _plot_cog_read_size_by_operation(plt, rows: list[dict[str, str]], path: Path
     ax.set_ylabel("Read volume (MiB)")
     ax.grid(axis="y", alpha=0.25)
     ax.tick_params(axis="x", labelrotation=20)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _plot_cog_latency_over_time(plt, rows: list[dict[str, str]], path: Path) -> Path:
@@ -206,10 +199,7 @@ def _plot_cog_latency_over_time(plt, rows: list[dict[str, str]], path: Path) -> 
     ax.set_ylabel("Latency (ms)")
     ax.grid(alpha=0.25)
     ax.legend()
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _plot_cog_window_latency_scatter(plt, rows: list[dict[str, str]], path: Path) -> Path:
@@ -239,10 +229,7 @@ def _plot_cog_window_latency_scatter(plt, rows: list[dict[str, str]], path: Path
     ax.grid(alpha=0.2)
     ax.legend()
     fig.colorbar(scatter, ax=ax, label="Latency (ms)")
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-    return path
+    return _save_figure(plt, fig, path, rows)
 
 
 def _has_cog_samples(rows: list[dict[str, str]]) -> bool:
@@ -259,3 +246,12 @@ def _with_details(row: dict[str, str]) -> dict[str, object]:
 
 def _figure_size(labels: list[str]) -> tuple[float, float]:
     return (max(8.0, len(labels) * 1.6), 5.0)
+
+
+def _save_figure(plt, fig, path, rows):
+    if rows and rows[0].get("run_label"):
+        fig.suptitle(rows[0]["run_label"], fontsize=9)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path

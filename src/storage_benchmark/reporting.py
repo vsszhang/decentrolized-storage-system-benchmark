@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import csv
+import json
+import tomllib
+import textwrap
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean
 
 from storage_benchmark.plotting import COG_OPERATIONS
+from storage_benchmark.pairing import completion_issues, validate_pairs
 
 REQUIRED_RESULT_FILES = ("metrics.csv", "samples.csv", "run_config.toml")
 METRIC_KEYS = (
@@ -25,6 +29,8 @@ class RunResult:
     benchmark_type: str
     metrics: list[dict[str, str]]
     samples: list[dict[str, str]]
+    metadata: dict | None
+    config: dict
 
 
 def generate_compare_report(
@@ -34,20 +40,36 @@ def generate_compare_report(
     if len(result_dirs) < 2:
         raise ValueError("at least two result directories are required")
 
-    runs = [load_run_result(path) for path in result_dirs]
+    runs = [load_run_result(path) for path in dict.fromkeys(path.resolve() for path in result_dirs)]
     output = output_dir or create_report_output_dir(Path("reports"), benchmark_type_for_runs(runs))
     output.mkdir(parents=True, exist_ok=True)
 
-    combined_metrics = _combine_rows(runs, "metrics")
-    combined_samples = _combine_rows(runs, "samples")
+    eligible = [run for run in runs if not completion_issues(run)]
+    combined_metrics = _combine_rows(eligible, "metrics")
+    combined_samples = _combine_rows(eligible, "samples")
+    pair_result = validate_pairs(runs)
+    valid_dirs = {directory for pair in pair_result["pairs"] if pair["status"] == "valid" for directory in pair["run_dirs"]}
+    paired = [run for run in runs if str(run.result_dir) in valid_dirs]
+    paired_metrics = _combine_rows(paired, "metrics")
+    paired_samples = _combine_rows(paired, "samples")
 
     paths = [
         _write_csv(output / "combined_metrics.csv", combined_metrics),
         _write_csv(output / "combined_samples.csv", combined_samples),
     ]
-    plot_paths = _write_compare_plots(output, combined_metrics, combined_samples)
+    paths.extend([
+        _write_csv(output / "paired_metrics.csv", paired_metrics),
+        _write_csv(output / "paired_samples.csv", paired_samples),
+    ])
+    validation_path = output / "pair_validation.json"
+    validation_path.write_text(json.dumps(pair_result, indent=2), encoding="utf-8")
+    paths.append(validation_path)
+    plot_paths = _write_compare_plots(output, combined_metrics, combined_samples) if combined_metrics and combined_samples else []
+    if paired_metrics:
+        import matplotlib.pyplot as plt
+        plot_paths.append(_plot_metric_by_run(plt, paired_metrics, output / "paired_throughput.png", "throughput_mb_s", "MiB/s"))
     paths.extend(plot_paths)
-    paths.append(_write_summary(output / "summary.md", runs, combined_metrics, plot_paths))
+    paths.append(_write_summary(output / "summary.md", runs, combined_metrics, plot_paths, pair_result, paired_metrics))
     return paths
 
 
@@ -58,17 +80,23 @@ def load_run_result(result_dir: Path) -> RunResult:
 
     metrics = _read_csv(result_dir / "metrics.csv")
     samples = _read_csv(result_dir / "samples.csv")
-    if not metrics:
+    meta_path = result_dir / "run_metadata.json"
+    metadata = json.loads(meta_path.read_text()) if meta_path.exists() else None
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("run_metadata.json must contain an object")
+    with (result_dir / "run_config.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    if not metrics and metadata is None:
         raise ValueError(f"no metrics rows found in {result_dir / 'metrics.csv'}")
-    if not samples:
+    if not samples and metadata is None:
         raise ValueError(f"no sample rows found in {result_dir / 'samples.csv'}")
 
     return RunResult(
         result_dir=result_dir,
-        run_id=result_dir.name,
-        benchmark_type=benchmark_type_from_result_dir(result_dir),
+        run_id=metadata.get("run_id", result_dir.name) if metadata else result_dir.name,
+        benchmark_type=metadata.get("benchmark_type", "unknown") if metadata else benchmark_type_from_result_dir(result_dir),
         metrics=metrics,
-        samples=samples,
+        samples=samples, metadata=metadata, config=config,
     )
 
 
@@ -120,6 +148,9 @@ def _combine_rows(runs: list[RunResult], field_name: str) -> list[dict[str, str]
                     "result_dir": str(run.result_dir),
                     "benchmark_type": run.benchmark_type,
                     **row,
+                    **{key: (run.metadata or {}).get(key, "unknown") for key in
+                       ("backend", "bucket", "storage_policy", "experiment_id", "pair_index", "status", "cleanup_status")},
+                    "run_label": run_label(run),
                 }
             )
     return rows
@@ -164,7 +195,7 @@ def _write_compare_plots(
     paths = [
         _plot_metric_trends(plt, metrics, output / "metric_trends_by_run.png"),
         _plot_latency_boxplot_by_run(plt, samples, output / "latency_boxplot_by_run.png"),
-        _plot_metric_by_run(plt, metrics, output / "throughput_by_run.png", "throughput_mb_s", "MB/s"),
+        _plot_metric_by_run(plt, metrics, output / "throughput_by_run.png", "throughput_mb_s", "MiB/s"),
         _plot_metric_by_run(plt, metrics, output / "iops_by_run.png", "iops", "IOPS"),
     ]
     if any(row["operation"] in COG_OPERATIONS for row in samples):
@@ -194,7 +225,7 @@ def _plot_metric_trends(plt, rows: list[dict[str, str]], path: Path) -> Path:
     axes_flat = list(axes.flat)
     for axis, metric in zip(axes_flat, ("throughput_mb_s", "iops", "avg_latency_ms", "p95_latency_ms"), strict=True):
         _plot_lines_by_workload(axis, rows, metric)
-        axis.set_title(metric)
+        axis.set_title("MiB/s" if metric == "throughput_mb_s" else metric)
         axis.grid(alpha=0.25)
         axis.tick_params(axis="x", labelrotation=25)
     axes_flat[0].legend(fontsize="small", loc="best")
@@ -206,7 +237,7 @@ def _plot_metric_trends(plt, rows: list[dict[str, str]], path: Path) -> Path:
 
 
 def _plot_lines_by_workload(axis, rows: list[dict[str, str]], metric: str) -> None:
-    run_ids = _ordered_unique(row["run_id"] for row in rows)
+    run_ids = _ordered_unique(row.get("run_label", row["run_id"]) for row in rows)
     grouped = _metric_values_by_label(rows, metric)
     for label, values_by_run in grouped.items():
         values = [values_by_run.get(run_id) for run_id in run_ids]
@@ -216,7 +247,7 @@ def _plot_lines_by_workload(axis, rows: list[dict[str, str]], metric: str) -> No
 def _plot_latency_boxplot_by_run(plt, rows: list[dict[str, str]], path: Path) -> Path:
     grouped: dict[str, list[float]] = {}
     for row in rows:
-        grouped.setdefault(row["run_id"], []).append(_float(row, "duration_seconds") * 1000)
+        grouped.setdefault(row.get("run_label", row["run_id"]), []).append(_float(row, "duration_seconds") * 1000)
 
     labels = list(grouped)
     values = [grouped[label] for label in labels]
@@ -233,7 +264,7 @@ def _plot_latency_boxplot_by_run(plt, rows: list[dict[str, str]], path: Path) ->
 
 
 def _plot_metric_by_run(plt, rows: list[dict[str, str]], path: Path, metric: str, ylabel: str) -> Path:
-    labels = [f"{row['run_id']}\n{row['workload']}\n{row['operation']}" for row in rows]
+    labels = [f"{row.get('run_label', row['run_id'])}\n{row['workload']}\n{row['operation']}" for row in rows]
     values = [_float(row, metric) for row in rows]
 
     fig, ax = plt.subplots(figsize=_figure_size(labels))
@@ -241,7 +272,7 @@ def _plot_metric_by_run(plt, rows: list[dict[str, str]], path: Path, metric: str
     ax.set_title(f"{ylabel} by Run")
     ax.set_ylabel(ylabel)
     ax.grid(axis="y", alpha=0.25)
-    ax.tick_params(axis="x", labelrotation=30)
+    ax.tick_params(axis="x", labelrotation=0 if any(row.get("backend", "unknown") != "unknown" for row in rows) else 30)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
@@ -252,7 +283,7 @@ def _plot_cog_window_latency_by_run(plt, rows: list[dict[str, str]], path: Path)
     window_rows = [row for row in rows if row["operation"] in {"randomwindow", "tilewindow"}]
     grouped: dict[str, list[float]] = {}
     for row in window_rows:
-        grouped.setdefault(row["run_id"], []).append(_float(row, "duration_seconds") * 1000)
+        grouped.setdefault(row.get("run_label", row["run_id"]), []).append(_float(row, "duration_seconds") * 1000)
 
     labels = list(grouped)
     values = [grouped[label] for label in labels]
@@ -270,7 +301,7 @@ def _plot_cog_window_latency_by_run(plt, rows: list[dict[str, str]], path: Path)
 
 def _plot_cog_operation_latency_by_run(plt, rows: list[dict[str, str]], path: Path) -> Path:
     cog_rows = [row for row in rows if row["operation"] in COG_OPERATIONS]
-    labels = [f"{row['run_id']}\n{row['operation']}" for row in cog_rows]
+    labels = [f"{row.get('run_label', row['run_id'])}\n{row['operation']}" for row in cog_rows]
     values = [_float(row, "duration_seconds") * 1000 for row in cog_rows]
 
     fig, ax = plt.subplots(figsize=_figure_size(labels))
@@ -286,52 +317,73 @@ def _plot_cog_operation_latency_by_run(plt, rows: list[dict[str, str]], path: Pa
     return path
 
 
-def _write_summary(
-    path: Path,
-    runs: list[RunResult],
-    metrics: list[dict[str, str]],
-    plot_paths: list[Path],
-) -> Path:
-    lines = [
-        "# Benchmark Compare Summary",
-        "",
-        "## Input Runs",
-        "",
-    ]
+def run_label(run: RunResult) -> str:
+    meta = run.metadata or {}
+    if not meta:
+        return run.run_id
+    identity = textwrap.fill(run.run_id, width=24, break_on_hyphens=False)
+    return f"{meta.get('storage_policy', 'unknown')} / {meta.get('bucket', 'unknown')}\nround {meta.get('pair_index')}\ncleanup {meta.get('cleanup_status')}\n{identity}"
+
+
+def _write_summary(path, runs, metrics, plot_paths, pair_result, paired_metrics) -> Path:
+    lines = ["# Benchmark Compare Summary", "", "## Input Runs", "",
+             "| run | backend / bucket / policy | round | status / cleanup | samples | failures / exclusions |",
+             "| --- | --- | --- | --- | ---: | --- |"]
     for run in runs:
-        lines.append(f"- `{run.run_id}`: `{run.result_dir}` ({run.benchmark_type})")
-
-    lines.extend(["", "## Workload Summary", ""])
-    lines.append("| workload | operation | metric | mean | min | max |")
-    lines.append("| --- | --- | --- | ---: | ---: | ---: |")
-    for (workload, operation), group in _group_metrics(metrics).items():
+        meta = run.metadata or {}
+        problems = completion_issues(run)
+        diagnostic = meta.get("error")
+        errors = ([str(diagnostic)] if diagnostic else []) + [str(e) for e in meta.get("cleanup_errors", [])]
+        lines.append(f"| {run.run_id} | {meta.get('backend', 'unknown')} / {meta.get('bucket', 'unknown')} / {meta.get('storage_policy', 'unknown')} | "
+                     f"{meta.get('pair_index', 'unknown')} | {meta.get('status', 'unknown')} / {meta.get('cleanup_status', 'unknown')} | "
+                     f"{len(run.samples)} | {'; '.join(problems + errors) or 'none recorded'} |")
+    lines.extend(["", "Sources:"] + [f"- `{run.result_dir}`" for run in runs])
+    lines.extend(["", "## Pair Validation", "", "Only valid pairs enter paired_metrics.csv / paired_samples.csv."])
+    for pair in pair_result["pairs"]:
+        lines.append(f"- {pair['experiment_id']} / round {pair['pair_index']} / {pair['benchmark_type']}: **{pair['status']}**; "
+                     + ("; ".join(pair["reasons"]) or "inputs and verification evidence match"))
+        lines.append("  Cluster observations: `" + json.dumps(pair["cluster_observations"], ensure_ascii=False) + "`")
+    for run in pair_result["unpaired_runs"]:
+        lines.append(f"- {run['run_id']}: unpaired ({'; '.join(run['reasons'])})")
+    lines.extend(["", "## Descriptive Workload Results", "",
+                  "These individual run metrics do not establish a valid REP/EC comparison.", "",
+                  "| run | workload | operation | samples | MiB/s | avg ms | P95 ms | P99 ms | ops/s |",
+                  "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"])
+    for row in metrics:
+        lines.append(f"| {row['run_id']} | {row['workload']} | {row['operation']} | {row['operations']} | "
+                     + " | ".join(f"{float(row[key]):.4f}" for key in ("throughput_mb_s", "avg_latency_ms", "p95_latency_ms", "p99_latency_ms", "iops")) + " |")
+    lines.extend(["", "## Valid Paired Workload Summary", "",
+                  "| experiment | policy | workload | operation | metric | runs | mean | min | max |",
+                  "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: |"])
+    grouped = {}
+    for row in paired_metrics:
+        group = (row["experiment_id"], row["storage_policy"], row["workload"], row["operation"])
+        grouped.setdefault(group, []).append(row)
+    for group, rows in grouped.items():
         for metric in METRIC_KEYS:
-            values = [_float(row, metric) for row in group]
-            lines.append(
-                f"| {workload} | {operation} | {metric} | "
-                f"{mean(values):.4f} | {min(values):.4f} | {max(values):.4f} |"
-            )
-
-    lines.extend(["", "## Generated Plots", ""])
-    for plot_path in plot_paths:
-        lines.append(f"- `{plot_path.name}`")
-
+            values = [float(row[metric]) for row in rows]
+            unit = "MiB/s" if metric == "throughput_mb_s" else metric
+            lines.append("| " + " | ".join(group) + f" | {unit} | {len(values)} | {mean(values):.4f} | {min(values):.4f} | {max(values):.4f} |")
+    lines.extend(["", "## Interpretation Limits", "",
+                  "- Throughput uses MiB/s; COG byte counts are decoded arrays, not network traffic. Metadata reads have zero counted bytes.",
+                  "- Read-only window timings and open-and-read timings are separate operations. Verification runs outside performance samples.",
+                  "- IOPS here is operations / summed operation time, not a cluster maximum. Wall time includes verification and bookkeeping.",
+                  "- Generated IO data repeats SHA-256 digest patterns; compression/deduplication settings can affect results.",
+                  "- P95/P99 summaries above average run-level percentiles; they are not pooled percentiles. Small sample counts limit tail conclusions.",
+                  "- First and repeated reads may have different cache states. No cold-cache or redundancy-only causal claim is established.",
+                  "- Cluster placement, media, load and recovery conditions may be unknown. Legacy results lack verified pairing metadata.",
+                  "- Failed/incomplete runs are listed above and excluded from descriptive performance aggregates; cleanup failures remain visible.",
+                  "", "## Generated Plots", ""])
+    lines.extend(f"- `{plot.name}`" for plot in plot_paths)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
-
-
-def _group_metrics(rows: list[dict[str, str]]) -> dict[tuple[str, str], list[dict[str, str]]]:
-    grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
-    for row in rows:
-        grouped.setdefault((row["workload"], row["operation"]), []).append(row)
-    return grouped
 
 
 def _metric_values_by_label(rows: list[dict[str, str]], metric: str) -> dict[str, dict[str, float]]:
     grouped: dict[str, dict[str, float]] = {}
     for row in rows:
         label = f"{row['workload']} / {row['operation']}"
-        grouped.setdefault(label, {})[row["run_id"]] = _float(row, metric)
+        grouped.setdefault(label, {})[row.get("run_label", row["run_id"])] = _float(row, metric)
     return grouped
 
 

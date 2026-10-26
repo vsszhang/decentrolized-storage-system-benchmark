@@ -24,6 +24,9 @@ def test_generate_compare_report_writes_combined_outputs_and_io_plots(tmp_path: 
     assert path_names == [
         "combined_metrics.csv",
         "combined_samples.csv",
+        "paired_metrics.csv",
+        "paired_samples.csv",
+        "pair_validation.json",
         "metric_trends_by_run.png",
         "latency_boxplot_by_run.png",
         "throughput_by_run.png",
