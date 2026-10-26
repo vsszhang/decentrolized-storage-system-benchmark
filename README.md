@@ -39,8 +39,9 @@ export S3_USE_SSL="false"
 
 ### Ceph paired buckets (local implementation; server acceptance pending)
 
-The four `configs/ceph-{rep,ec}-{io,cog}-smoke.toml` profiles target `zhang_rep`
-(rep3) and `zhang_ec` (ec4_2). Their endpoint and region are intentionally empty:
+The four `configs/ceph-{rep,ec}-{io,cog}-smoke.toml` profiles target `zhang-rep`
+(rep3) and `zhang-ec` (ec4_2). Use these exact bucket names with hyphens.
+Their endpoint and region are intentionally empty:
 set `S3_ENDPOINT_URL` to the confirmed RGW HTTP/HTTPS URL and `S3_REGION` to the
 confirmed region. Set `S3_USE_SSL` to match the URL scheme. The SSH login address
 is not an RGW endpoint. Credentials remain environment-only as described above.

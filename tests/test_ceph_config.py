@@ -24,7 +24,7 @@ def s3_env(monkeypatch):
 def test_ceph_smoke_pairs_are_equal_except_targets_and_labels(kind):
     rep = load_config(ROOT / f"configs/ceph-rep-{kind}-smoke.toml")
     ec = load_config(ROOT / f"configs/ceph-ec-{kind}-smoke.toml")
-    assert (rep.s3.bucket, ec.s3.bucket) == ("zhang_rep", "zhang_ec")
+    assert (rep.s3.bucket, ec.s3.bucket) == ("zhang-rep", "zhang-ec")
     assert rep.s3.endpoint_url == ec.s3.endpoint_url == ""
     assert rep.s3.region == ec.s3.region == ""
     assert rep.run.output_dir != ec.run.output_dir
@@ -45,7 +45,7 @@ def test_effective_configuration_round_trip_and_pair_precedence(s3_env, monkeypa
     assert actual.s3.endpoint_url == "http://rgw.example.test:8080"
     assert actual.s3.region == "test-region"
     assert actual.experiment.pair_index == 3
-    assert {w.bucket for w in actual.cog_workloads} == {"zhang_rep"}
+    assert {w.bucket for w in actual.cog_workloads} == {"zhang-rep"}
     assert {w.object_key for w in actual.cog_workloads} == {"cog/actual.tif"}
     assert "test-access-not-real" not in path.read_text() + repr(settings)
     assert "test-secret-not-real" not in path.read_text() + repr(settings)
@@ -74,13 +74,13 @@ def test_default_pair_legacy_compatibility_and_workload_bucket_guard(s3_env, tmp
     with pytest.raises(ValueError, match="requires \\[experiment\\]"):
         effective_config(legacy, settings, 1)
     cog = load_config(ROOT / "configs/ceph-rep-cog-smoke.toml")
-    cog = replace(cog, cog_workloads=[replace(cog.cog_workloads[0], bucket="zhang_ec")])
+    cog = replace(cog, cog_workloads=[replace(cog.cog_workloads[0], bucket="zhang-ec")])
     with pytest.raises(ValueError, match="Effective bucket"):
-        effective_config(cog, replace(settings, bucket="zhang_rep"))
+        effective_config(cog, replace(settings, bucket="zhang-rep"))
 
 
 def test_target_conflict_stops_before_client_creation(s3_env, monkeypatch, tmp_path):
-    monkeypatch.setenv("S3_BUCKET", "zhang_ec")
+    monkeypatch.setenv("S3_BUCKET", "zhang-ec")
     def forbidden_client(settings):
         pytest.fail("Client must not be constructed for a conflicting target")
     monkeypatch.setattr(cli, "BotoS3Client", forbidden_client)

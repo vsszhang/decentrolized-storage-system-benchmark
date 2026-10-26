@@ -28,7 +28,7 @@ OPTIONS = {"connect_timeout": 60, "read_timeout": 60, "retries": {"mode": "legac
 
 
 def io_run(root, side="rep", seed=42, run_id_suffix=""):
-    bucket = f"zhang_{side}"
+    bucket = f"zhang-{side}"
     policy = "rep3" if side == "rep" else "ec4_2"
     settings = S3Settings("http://rgw.test:8080", "test-access", "test-secret", bucket)
     config = BenchmarkConfig(
@@ -65,7 +65,7 @@ def reference_cog(tmp_path):
 
 
 def cog_run(root, reference, side="rep", *, validate=True):
-    bucket = f"zhang_{side}"
+    bucket = f"zhang-{side}"
     settings = S3Settings("http://rgw.test:8080", "test-access", "test-secret", bucket)
     workloads = [CogWorkloadConfig(name, op, "cog/sample.tif", bucket=bucket,
                  iterations=50 if op in {CogOperation.RANDOMWINDOW, CogOperation.TILEWINDOW} else 1,
@@ -221,7 +221,7 @@ def test_window_metadata_recording_is_outside_read_timer(monkeypatch):
     monkeypatch.setattr(cog_gdal, "_dataset_details", metadata)
     from rasterio.windows import Window
     workload = CogWorkloadConfig("window", CogOperation.RANDOMWINDOW, "sample.tif")
-    settings = S3Settings("http://rgw.test", "test-access", "test-secret", "zhang_rep")
+    settings = S3Settings("http://rgw.test", "test-access", "test-secret", "zhang-rep")
     sample = cog_gdal._read_window(workload, settings, Dataset(), Window(0, 0, 2, 2), 1)
     assert sample.duration_seconds == 2 and events == ["timer", "read", "timer", "metadata"]
 

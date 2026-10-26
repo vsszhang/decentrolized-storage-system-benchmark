@@ -3,7 +3,7 @@
 # Credentials are environment-only; never add them to this file.
 [s3]
 endpoint_url = ""
-bucket = "zhang_ec"
+bucket = "zhang-ec"
 region = ""
 use_ssl = false
 

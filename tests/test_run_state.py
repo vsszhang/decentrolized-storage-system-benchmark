@@ -22,7 +22,7 @@ def setup_run(tmp_path, monkeypatch):
     monkeypatch.delenv("S3_USE_SSL", raising=False)
     path = tmp_path / "run.toml"
     path.write_text(f'''[s3]
-bucket="zhang_rep"
+bucket="zhang-rep"
 [experiment]
 experiment_id="method-v1"
 backend="ceph"
@@ -37,7 +37,7 @@ chunk_size=16
 iterations=2
 ''')
     client = FakeS3Client()
-    client.bucket = "zhang_rep"
+    client.bucket = "zhang-rep"
     monkeypatch.setattr(cli, "BotoS3Client", lambda settings: client)
     return path, client, tmp_path / "results"
 
@@ -71,7 +71,7 @@ def test_initial_identity_effective_values_and_two_run_isolation(setup_run, monk
         snapshot = load_config(directory / "run_config.toml")
         pair_indexes.add(meta["pair_index"])
         assert meta["status"] == "completed" and meta["cleanup_status"] == "not_requested"
-        assert meta["bucket"] == snapshot.s3.bucket == "zhang_rep"
+        assert meta["bucket"] == snapshot.s3.bucket == "zhang-rep"
         assert snapshot.s3.endpoint_url == "http://rgw.example.test:8080"
         assert snapshot.s3.region == meta["environment"]["region"] == "test-region"
         assert snapshot.experiment.pair_index == meta["pair_index"]
@@ -205,7 +205,7 @@ window_height=2
     def run_cog(workloads, settings, rng, **kwargs):
         assert settings.endpoint_url == "http://rgw.example.test:8080"
         assert settings.region == "test-region" and not settings.use_ssl
-        assert {w.bucket for w in workloads} == {"zhang_rep"}
+        assert {w.bucket for w in workloads} == {"zhang-rep"}
         assert {w.object_key for w in workloads} == {"cog/chosen.tif"}
         return run_cog_workloads(workloads, settings, rng, opener=opener, **kwargs)
     monkeypatch.setattr(cli, "run_cog_workloads", run_cog)

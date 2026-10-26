@@ -38,7 +38,7 @@ def test_check_sdk_requests_failures_cleanup_and_stream_closure(
     # check must not execute, or even need to parse, performance workloads.
     path.write_text(f'''[s3]
 endpoint_url="http://rgw.example.test:8080"
-bucket="zhang_rep"
+bucket="zhang-rep"
 [run]
 output_dir="{tmp_path}"
 [[workloads]]
@@ -50,13 +50,13 @@ operation="invalid-performance-workload"
         output.mkdir(parents=True)
         return output
     monkeypatch.setattr(cli, "_create_output_dir", create)
-    settings = S3Settings.from_config_and_env(S3Config(endpoint_url="http://rgw.example.test:8080", bucket="zhang_rep"))
+    settings = S3Settings.from_config_and_env(S3Config(endpoint_url="http://rgw.example.test:8080", bucket="zhang-rep"))
     client = BotoS3Client(settings)
     assert client.connection_options()["addressing_style"] == "path"
     monkeypatch.setattr(cli, "BotoS3Client", lambda settings: client)
     stub = Stubber(client._client)
     key = "benchmark/standalone/fixed-run/check/object.bin"
-    target = {"Bucket": "zhang_rep", "Key": key}
+    target = {"Bucket": "zhang-rep", "Key": key}
     payload = bytes(range(256)) * 16
     raw_streams = []
     def body(data):
@@ -90,7 +90,7 @@ operation="invalid-performance-workload"
                     stub.add_response("get_object", response, {**target, "Range": "bytes=17-126"})
     listing = scenario in {"list", "list_denied"}
     if listing:
-        params = {"Bucket": "zhang_rep", "Prefix": "benchmark/standalone/fixed-run/"}
+        params = {"Bucket": "zhang-rep", "Prefix": "benchmark/standalone/fixed-run/"}
         if scenario == "list_denied":
             denied("list_objects_v2", params)
         else:
@@ -165,7 +165,7 @@ def test_all_four_real_profiles_check_their_own_bucket_without_running_workloads
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-access-not-real")
     monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret-not-real")
     monkeypatch.delenv("S3_BUCKET", raising=False)
-    expected_bucket = "zhang_rep" if profile.startswith("rep") else "zhang_ec"
+    expected_bucket = "zhang-rep" if profile.startswith("rep") else "zhang-ec"
     def factory(settings):
         assert settings.bucket == expected_bucket
         client.bucket = settings.bucket

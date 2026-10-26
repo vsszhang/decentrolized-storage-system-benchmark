@@ -22,7 +22,7 @@ def test_verified_pair_generates_labeled_report_and_paired_artifacts(tmp_path):
     with (output / "paired_metrics.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     assert {r["storage_policy"] for r in rows} == {"rep3", "ec4_2"}
-    assert {r["bucket"] for r in rows} == {"zhang_rep", "zhang_ec"}
+    assert {r["bucket"] for r in rows} == {"zhang-rep", "zhang-ec"}
     text = (output / "summary.md").read_text()
     assert "MiB/s" in text and "decoded arrays" in text and "round 1" in text
     assert "Valid Paired Workload Summary" in text
